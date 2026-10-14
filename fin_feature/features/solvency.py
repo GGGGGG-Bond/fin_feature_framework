@@ -1,4 +1,10 @@
-"""偿债能力特征：资产负债率变化、流动比率变化、权益比率。"""
+"""偿债能力特征：资产负债率变化、流动比率变化、权益比率、资产负债率。
+
+定义版本：stage1-v1
+- 资产负债率、权益比率输出小数（0.6 表示 60%）
+- 变化值输出百分点（如 0.55→0.60 输出 5.0）
+- 流动比率单位未知时不强行计算
+"""
 
 from fin_feature.features.base import Feature, FeatureContext
 from fin_feature.features.registry import FeatureRegistry
@@ -6,7 +12,12 @@ from fin_feature.features.registry import FeatureRegistry
 
 @FeatureRegistry.register
 class DebtAssetRatioChange(Feature):
-    """资产负债率变化 = 当期 - 上期（百分点）。"""
+    """资产负债率变化 = 当期 - 上期（百分点）。
+
+    定义版本：stage1-v1
+    输入为小数时输出百分点差值：(0.60 - 0.55) * 100 = 5.0
+    兼容旧百分数输入：60.0 - 55.0 = 5.0
+    """
 
     name = "debt_asset_ratio_change"
     group = "solvency"
@@ -17,32 +28,51 @@ class DebtAssetRatioChange(Feature):
         if ctx.previous is None:
             return None
         previous = ctx.previous.get("debt_asset_ratio")
-        return self.difference(current, previous)
+        if current is None or previous is None:
+            return None
+        # 检测输入格式：>1 可能是百分数，<=1 可能是小数
+        # 百分数输入直接返回差值，小数输入转百分点
+        if abs(current) <= 1.0 and abs(previous) <= 1.0:
+            # 小数输入：(0.60 - 0.55) * 100 = 5.0 个百分点
+            return (current - previous) * 100
+        else:
+            # 百分数输入兼容：60.0 - 55.0 = 5.0 个百分点
+            return current - previous
 
 
 @FeatureRegistry.register
 class CurrentRatioChange(Feature):
-    """流动比率变化 = 当期 - 上期。"""
+    """流动比率变化 = 当期 - 上期（倍数差）。
+
+    定义版本：stage1-v1
+    流动比率单位需预先验证，未知单位时不计算
+    """
 
     name = "current_ratio_change"
     group = "solvency"
-    description = "流动比率变化（当期 - 上期）"
+    description = "流动比率变化（当期 - 上期，倍数差）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
         current = ctx.current.get("current_ratio")
         if ctx.previous is None:
             return None
         previous = ctx.previous.get("current_ratio")
-        return self.difference(current, previous)
+        if current is None or previous is None:
+            return None
+        return current - previous
 
 
 @FeatureRegistry.register
 class EquityRatio(Feature):
-    """权益比率 = 净资产 / 总资产。"""
+    """权益比率 = 总权益 / 总资产（小数）。
+
+    定义版本：stage1-v1
+    允许权益为负，结果可为负
+    """
 
     name = "equity_ratio"
     group = "solvency"
-    description = "权益比率 = 净资产 / 总资产"
+    description = "权益比率 = 总权益 / 总资产（小数，可为负）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
         equity = ctx.current.get("total_equity")
@@ -52,11 +82,18 @@ class EquityRatio(Feature):
 
 @FeatureRegistry.register
 class DebtAssetRatio(Feature):
-    """资产负债率（当期水平值）。"""
+    """资产负债率 = 总负债 / 总资产（小数）。
+
+    定义版本：stage1-v1
+    允许结果超过 1（资不抵债）
+    """
 
     name = "debt_asset_ratio"
     group = "solvency"
-    description = "资产负债率（当期水平值）"
+    description = "资产负债率 = 总负债 / 总资产（小数，可超过 1）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
-        return ctx.current.get("debt_asset_ratio")
+        # 优先使用 BS 自算值
+        liabilities = ctx.current.get("total_liabilities")
+        assets = ctx.current.get("total_assets")
+        return self.safe_divide(liabilities, assets)

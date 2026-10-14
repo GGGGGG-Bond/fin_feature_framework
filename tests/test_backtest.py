@@ -1,4 +1,7 @@
-"""回测框架测试：分组逻辑、多空收益、数据不足处理。"""
+"""回测框架（分组分析）测试：分组逻辑、组间差异、数据不足处理。
+
+stage1-v1: 输出为盈利增长分析，非投资收益回测。
+"""
 
 from fin_feature.addons.backtest import format_report, run_backtest, BacktestResult
 from fin_feature.storage.repository import Repository
@@ -15,24 +18,40 @@ def _seed_features(repo, formation_date="2024-12-31"):
 
 
 def test_backtest_5_groups(repo):
-    """10个样本分5组，每组2个。"""
+    """10 个样本分 5 组，每组 2 个。"""
     _seed_features(repo)
     result = run_backtest(repo, "roe_change", "2024-12-31", n_groups=5)
     assert result.total_samples == 10
     assert len(result.group_stats) == 5
-    # 每组2个样本
+    # 每组 2 个样本
     for stat in result.group_stats:
         assert stat["size"] == 2
 
 
-def test_backtest_long_short(repo):
-    """多空收益 = 最高组平均 - 最低组平均。"""
-    _seed_features(repo)
-    result = run_backtest(repo, "roe_change", "2024-12-31", n_groups=5)
-    # 最低组特征值1,2 -> 收益0.1,0.2 -> 平均0.15
-    # 最高组特征值9,10 -> 收益0.9,1.0 -> 平均0.95
-    assert result.long_short is not None
-    assert abs(result.long_short - 0.8) < 0.001
+def test_backtest_long_short():
+    """组间差异 = 最高组平均 - 最低组平均。"""
+    from fin_feature.storage.database import Database
+    from fin_feature.storage.repository import Repository
+    import tempfile
+    import os
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+
+    try:
+        db = Database(db_path)
+        db.init()
+        repo = Repository(db.conn)
+        _seed_features(repo)
+        result = run_backtest(repo, "roe_change", "2024-12-31", n_groups=5)
+        # 最低组特征值 1,2 -> 收益 0.1,0.2 -> 平均 0.15
+        # 最高组特征值 9,10 -> 收益 0.9,1.0 -> 平均 0.95
+        assert result.long_short is not None
+        assert abs(result.long_short - 0.8) < 0.001
+        db.close()
+    finally:
+        db.close()
+        os.unlink(db_path)
 
 
 def test_backtest_insufficient_samples(repo):
@@ -51,7 +70,10 @@ def test_backtest_no_data(repo):
 
 
 def test_format_report():
-    """报告格式化应包含关键信息。"""
+    """报告格式化应包含关键信息。
+
+    stage1-v1: 使用"组间差异"和"盈利增长"术语，非"多空收益"。
+    """
     result = BacktestResult(
         feature_name="roe_change", formation_date="2024-12-31", n_groups=5,
         total_samples=10,
@@ -64,5 +86,5 @@ def test_format_report():
     text = format_report(result)
     assert "roe_change" in text
     assert "2024-12-31" in text
-    assert "多空收益" in text
-    assert "收益代理" in text
+    assert "组间差异" in text  # stage1-v1 术语
+    assert "盈利增长" in text  # stage1-v1 术语

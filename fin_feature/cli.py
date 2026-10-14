@@ -54,7 +54,7 @@ def cmd_crawl(args) -> None:
     logger.info("开始爬取 %d 只股票列表...", stock_count)
     stocks = stock_crawler.fetch_stock_list(stock_count)
     repo.upsert_stock_list(stocks)
-    logger.info("股票列表爬取完成: %d 只", len(stocks))
+    logger.info("股票列表爬取完成：%d 只", len(stocks))
 
     # 2. 爬取三张报表
     em_crawler = EastMoneyCrawler(
@@ -74,19 +74,33 @@ def cmd_crawl(args) -> None:
     }
 
     secucodes = [s["secucode"] for s in stocks]
+    # 读取 recent_periods 配置
+    recent_periods = config.crawl.get("recent_periods")
     for report_name, table_suffix in report_map.items():
-        logger.info("开始爬取 %s (%d 家公司)...", report_name, len(secucodes))
+        logger.info("开始爬取 %s (%d 家公司，recent_periods=%s)...", report_name, len(secucodes), recent_periods)
         total = 0
         for i, secucode in enumerate(secucodes, 1):
             try:
                 records = em_crawler.fetch_by_company(secucode, report_name)
+                # 若配置了 recent_periods，限制为最近 N 个不同报告期
+                if recent_periods is not None and recent_periods > 0:
+                    seen_dates: set[str] = set()
+                    filtered: list[dict] = []
+                    for r in records:
+                        rd = r.get("REPORT_DATE") or r.get("REPORTDATE") or ""
+                        if rd and rd not in seen_dates:
+                            seen_dates.add(rd)
+                            filtered.append(r)
+                        if len(seen_dates) >= recent_periods:
+                            break
+                    records = filtered
                 mapped = [map_fields(r, report_name) for r in records]
                 written = repo.batch_upsert_raw(table_suffix, mapped)
                 total += written
                 logger.info("[%d/%d] %s %s: %d 条", i, len(secucodes), secucode, table_suffix, written)
             except Exception as exc:
-                logger.error("爬取 %s %s 失败: %s", secucode, report_name, exc)
-        logger.info("%s 爬取完成: 共 %d 条", report_name, total)
+                logger.error("爬取 %s %s 失败：%s", secucode, report_name, exc)
+        logger.info("%s 爬取完成：共 %d 条", report_name, total)
 
     db.close()
 
@@ -100,7 +114,9 @@ def cmd_clean(args) -> None:
 
     db, repo = _get_db_and_repo(config)
     logger.info("开始数据清洗...")
-    stats = run_cleaning(repo)
+    # 传入 YAML 清洗配置
+    cleaning_config = config.cleaning
+    stats = run_cleaning(repo, config=cleaning_config)
     for s in stats:
         logger.info(
             "表 %s: 原始%d -> 去重%d -> 丢弃%d -> 清洗%d",
@@ -120,7 +136,7 @@ def cmd_features(args) -> None:
     logger.info("开始特征计算...")
     groups = config.features.get("groups")
     count = compute_all(repo, groups=groups)
-    logger.info("特征计算完成: %d 条", count)
+    logger.info("特征计算完成：%d 条", count)
     db.close()
 
 
@@ -169,8 +185,10 @@ def cmd_incremental(args) -> None:
         logger.error("无股票列表，请先执行 crawl")
         db.close()
         return
-    logger.info("增量爬取 %d 家公司...", len(secucodes))
-    stats = crawl_incremental(em_crawler, repo, secucodes)
+    # 读取 recent_periods 配置
+    recent_periods = config.crawl.get("recent_periods")
+    logger.info("增量爬取 %d 家公司，recent_periods=%s...", len(secucodes), recent_periods)
+    stats = crawl_incremental(em_crawler, repo, secucodes, recent_periods=recent_periods)
     for report_name, count in stats.items():
         logger.info("%s: 新增 %d 条", report_name, count)
     db.close()
@@ -213,9 +231,9 @@ def main() -> None:
     sub.add_parser("crawl", help="爬取财务数据")
     sub.add_parser("clean", help="清洗数据")
     sub.add_parser("features", help="计算特征")
-    sub.add_parser("quality", help="生成质量报告")
+    sub.add_parser("quality", help="生成数据质量报告")
     sub.add_parser("incremental", help="增量爬取")
-    bt = sub.add_parser("backtest", help="特征回测")
+    bt = sub.add_parser("backtest", help="特征回测（分组分析）")
     bt.add_argument("--feature", required=True, help="用于分组的特征名")
     bt.add_argument("--date", required=True, help="分组日（报告期，如 2024-12-31）")
 

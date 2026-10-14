@@ -1,4 +1,7 @@
-"""清洗模块测试：去重、异常值检测、缺失值处理、时间对齐。"""
+"""清洗模块测试：去重、异常值检测、缺失值处理、时间对齐。
+
+测试基于 stage1-v1 标准单位阈值。
+"""
 
 from fin_feature.cleaning.dedup import deduplicate
 from fin_feature.cleaning.missing import handle_missing
@@ -48,15 +51,30 @@ def test_dedup_keeps_latest_notice_date(repo):
 
 
 def test_outlier_threshold(repo):
-    """超出阈值的字段应置 NULL。"""
+    """超出阈值的字段应置 NULL。
+
+    stage1-v1 阈值（标准单位：小数）：
+    - weightavg_roe: [-2.0, 2.0]
+    - gross_margin: [-1.0, 1.0]
+    """
     record = {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
-        "weightavg_roe": 500.0,  # 超出 [-200, 200]
-        "gross_margin": 30.0,    # 正常
+        "weightavg_roe": 5.0,    # 超出 [-2.0, 2.0]（500%）
+        "gross_margin": 1.5,     # 超出 [-1.0, 1.0]（150%）
     }
     fixed = detect_and_fix(repo, "financial_indicator", record)
     assert fixed["weightavg_roe"] is None
-    assert fixed["gross_margin"] == 30.0
+    assert fixed["gross_margin"] is None
+
+    # 正常值应保留
+    record2 = {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "weightavg_roe": 0.15,   # 15%，正常
+        "gross_margin": 0.30,    # 30%，正常
+    }
+    fixed2 = detect_and_fix(repo, "financial_indicator", record2)
+    assert fixed2["weightavg_roe"] == 0.15
+    assert fixed2["gross_margin"] == 0.30
 
 
 def test_outlier_negative_on_positive_field(repo):
@@ -97,7 +115,7 @@ def test_time_align_on_time(repo):
     """预期窗口内披露应标记 on_time。"""
     record = {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
-        "notice_date": "2025-04-29",  # 年报次年4月，在窗口内
+        "notice_date": "2025-04-29",  # 年报次年 4 月，在窗口内
     }
     result = align_time(repo, "financial_indicator", record)
     assert result["disclosure_status"] == "on_time"
@@ -108,7 +126,7 @@ def test_time_align_delayed(repo):
     """晚于窗口披露应标记 delayed。"""
     record = {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
-        "notice_date": "2025-06-15",  # 年报应在1-4月，6月属延迟
+        "notice_date": "2025-06-15",  # 年报应在 1-4 月，6 月属延迟
     }
     result = align_time(repo, "financial_indicator", record)
     assert result["disclosure_status"] == "delayed"
@@ -130,15 +148,15 @@ def test_clean_table_pipeline(repo):
         _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
                   "notice_date": "2025-04-29",
                   "total_operate_income": 1000.0, "parent_netprofit": 200.0,
-                  "weightavg_roe": 15.0, "gross_margin": 30.0}),
+                  "weightavg_roe": 0.15, "gross_margin": 0.30}),
         _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
                   "notice_date": "2025-04-30",  # 修订版
                   "total_operate_income": 1100.0, "parent_netprofit": 220.0,
-                  "weightavg_roe": 16.0, "gross_margin": 31.0}),
+                  "weightavg_roe": 0.16, "gross_margin": 0.31}),
     ]
     stats = clean_table(repo, "financial_indicator", raw_records)
     assert stats.raw_count == 2
-    assert stats.dedup_count == 1  # 去重后1条
+    assert stats.dedup_count == 1  # 去重后 1 条
     assert stats.clean_count == 1
     # 验证清洗表写入
     row = repo.get_clean_record("financial_indicator", "002501.SZ", "2024-12-31")

@@ -31,13 +31,29 @@ def _merge_three_tables(
 ) -> dict:
     """合并某公司某报告期的三张清洗表数据为一个 dict。
 
-    三表字段无冲突（已在前置映射中保证命名独立），直接合并。
+    字段权威规则：
+    - total_operate_income, parent_netprofit: IS(利润表) 优先，FI(财务指标) 仅可比回退
+    - weightavg_roe, gross_margin: FI 优先
+    - total_assets, total_liabilities, total_equity, debt_asset_ratio, current_ratio: BS(资产负债表) 优先
+
+    非权威表的空值不覆盖权威表的有效值。
     """
     merged: dict = {}
+
+    # 按权威顺序合并：先 FI，再 IS，最后 BS
+    # 这样 IS 的有效值会覆盖 FI，BS 的有效值会覆盖前两者
+    # 但需要防止空值覆盖有效值
     for table_suffix in ["financial_indicator", "income_statement", "balance_sheet"]:
         row = repo.get_clean_record(table_suffix, secucode, report_date)
-        if row is not None:
-            merged.update(dict(row))
+        if row is None:
+            continue
+        row_dict = dict(row)
+        for key, value in row_dict.items():
+            # 空值不覆盖已有有效值
+            if value is None and key in merged and merged[key] is not None:
+                continue
+            # 有效值可以覆盖
+            merged[key] = value
     return merged
 
 

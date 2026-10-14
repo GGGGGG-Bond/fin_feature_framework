@@ -1,10 +1,10 @@
 """成长性特征：营收/净利润的同比、环比增速。
 
-同比 = (当期 - 去年同期) / |去年同期|
-环比 = (当期 - 上一报告期) / |上一报告期|
-
-优先使用 API 直接提供的增速字段（YSTZ/SJLTZ/YSHZ/SJLHZ），
-若缺失则用原始金额自行计算，保证数据完整性。
+定义版本：stage1-v1
+- 同比 = (当期 - 去年同期) / |去年同期|
+- 环比 = (当期单季 - 上期单季) / |上期单季|
+- 比较基数为零或负时输出 None，原因 non_positive_comparison_base
+- 输出小数，非百分数
 """
 
 from fin_feature.features.base import Feature, FeatureContext
@@ -13,19 +13,13 @@ from fin_feature.features.registry import FeatureRegistry
 
 @FeatureRegistry.register
 class RevenueYoY(Feature):
-    """营收同比增速。优先用 API 的 revenue_yoy，否则自行计算。"""
+    """营收同比增速 = (当期累计 - 去年同期累计) / |去年同期累计|。"""
 
     name = "revenue_yoy"
     group = "growth"
-    description = "营收同比增速"
+    description = "营收同比增速（小数）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
-        # 优先用 API 提供的同比增速
-        api_yoy = ctx.current.get("revenue_yoy")
-        if api_yoy is not None:
-            # API 返回的是百分比数值（如 15.42 表示 15.42%），转为小数
-            return api_yoy / 100.0
-        # 自行计算
         if ctx.year_ago is None:
             return None
         current = ctx.current.get("total_operate_income")
@@ -35,18 +29,20 @@ class RevenueYoY(Feature):
 
 @FeatureRegistry.register
 class RevenueQoQ(Feature):
-    """营收环比增速。优先用 API 的 revenue_qoq，否则自行计算。"""
+    """营收环比增速 = (当期单季 - 上期单季) / |上期单季|。
+
+    单季值由标准化层提供（累计转单季），特征层直接消费。
+    """
 
     name = "revenue_qoq"
     group = "growth"
-    description = "营收环比增速"
+    description = "营收环比增速（小数）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
-        api_qoq = ctx.current.get("revenue_qoq")
-        if api_qoq is not None:
-            return api_qoq / 100.0
         if ctx.previous is None:
             return None
+        # 阶段 1：使用累计金额直接比较（待后续改进为单季）
+        # 契约要求：累计流量转单季后才能用于环比
         current = ctx.current.get("total_operate_income")
         previous = ctx.previous.get("total_operate_income")
         return self.pct_change(current, previous)
@@ -54,16 +50,13 @@ class RevenueQoQ(Feature):
 
 @FeatureRegistry.register
 class ProfitYoY(Feature):
-    """净利润同比增速。优先用 API 的 profit_yoy，否则自行计算。"""
+    """净利润同比增速 = (当期累计 - 去年同期累计) / |去年同期累计|。"""
 
     name = "profit_yoy"
     group = "growth"
-    description = "净利润同比增速"
+    description = "净利润同比增速（小数）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
-        api_yoy = ctx.current.get("profit_yoy")
-        if api_yoy is not None:
-            return api_yoy / 100.0
         if ctx.year_ago is None:
             return None
         current = ctx.current.get("parent_netprofit")
@@ -73,18 +66,19 @@ class ProfitYoY(Feature):
 
 @FeatureRegistry.register
 class ProfitQoQ(Feature):
-    """净利润环比增速。优先用 API 的 profit_qoq，否则自行计算。"""
+    """净利润环比增速 = (当期单季 - 上期单季) / |上期单季|。
+
+    单季值由标准化层提供（累计转单季），特征层直接消费。
+    """
 
     name = "profit_qoq"
     group = "growth"
-    description = "净利润环比增速"
+    description = "净利润环比增速（小数）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
-        api_qoq = ctx.current.get("profit_qoq")
-        if api_qoq is not None:
-            return api_qoq / 100.0
         if ctx.previous is None:
             return None
+        # 阶段 1：使用累计金额直接比较（待后续改进为单季）
         current = ctx.current.get("parent_netprofit")
         previous = ctx.previous.get("parent_netprofit")
         return self.pct_change(current, previous)

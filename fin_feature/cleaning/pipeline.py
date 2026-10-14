@@ -107,12 +107,19 @@ def clean_table(
     return stats
 
 
-def run_cleaning(repo: Repository) -> list[CleanStats]:
+def run_cleaning(repo: Repository, config: dict | None = None) -> list[CleanStats]:
     """执行全部三张表的清洗。
 
     从原始表读取数据，清洗后写入清洗表。
+    config: 清洗配置（cleaning 段），用于覆盖默认规则
     """
+    from fin_feature.cleaning.rules import load_rules_config
     from fin_feature.constants import RAW_TABLES
+
+    # 加载配置覆盖默认规则
+    if config:
+        load_rules_config(config)
+        logger.info("已加载清洗配置覆盖默认规则")
 
     all_stats: list[CleanStats] = []
     for table_suffix in ["financial_indicator", "income_statement", "balance_sheet"]:
