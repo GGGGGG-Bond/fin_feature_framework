@@ -25,3 +25,6 @@ include = ["fin_feature*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "requires_network: 需要网络连接的测试（真实 API 爬取），CI 可用 -m 'not requires_network' 跳过",
+]
