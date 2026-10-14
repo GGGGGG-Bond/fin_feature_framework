@@ -1,0 +1,32 @@
+# Local environments and Python caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+# Generated datasets, reports, logs and databases
+/data/
+/reports/
+/logs/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+# Credentials and local settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+config.local.*
+# Packaging and editor output
+build/
+dist/
+*.egg-info/
+.idea/
+.vscode/
