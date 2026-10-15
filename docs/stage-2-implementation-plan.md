@@ -95,7 +95,7 @@
 
 **设计决策 D2**：statement_version 的标准化字段用 JSON 列存储。理由：三张表字段集合不同（FI/IS/BS 字段各异），展开列会导致大量 NULL。JSON 列允许异构表统一存储，SQLite 内置 JSON1 扩展支持 json_extract 查询。标准化字段是写入后不可变的快照。
 
-**设计决策 D3**：版本区分用语义版本哈希 + 观察序号。同一 (secucode, report_date, table_type) 下，semantic_hash 不同即为新版本。observation_seq 自增便于排序。旧版本标记 is_superseded=1 但不删除。
+**设计决策 D3**：版本区分用语义版本哈希 + 观察序号。同一 (secucode, report_date, table_type, source_name) 下，semantic_hash 不同即为新版本。observation_seq 自增便于排序。旧版本标记 is_superseded=1 但不删除。
 
 **设计决策 D3-a（A2 修复）**：区分三层哈希，避免不同口径去重为同一版本：
 - `raw_content_hash`（raw_snapshot）：原始响应 JSON 的哈希，仅用于原始响应去重
@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS raw_snapshot (
     page_number     INTEGER,
     request_params  TEXT,                      -- JSON（去除凭据）
     fetched_at      TEXT DEFAULT (datetime('now', 'localtime')),
-    content_hash    TEXT NOT NULL,             -- SHA-256
+    raw_content_hash TEXT NOT NULL,            -- SHA-256（原始响应 JSON，仅用于去重，见哈希规范）
     file_path       TEXT NOT NULL,             -- 不可变内容文件路径
     record_count    INTEGER,
     FOREIGN KEY (run_id) REFERENCES ingest_run(run_id)
@@ -259,7 +259,7 @@ CREATE INDEX IF NOT EXISTS idx_fcl_run ON feature_compute_log(compute_run_id);
 - `snapshot_id=NULL`、`run_id=NULL`（不编造采集批次）
 - `observed_at` 用 crawled_at（若为 NULL 则用迁移时间）
 - `content_hash` 用标准化字段内容计算
-- `observation_seq` 按 (secucode, report_date, table_type) 分组，按 `notice_date, crawled_at, rowid` 排序自增（P1-2 修复：notice_date 为 NULL 时回退到 crawled_at 再到 rowid，确保确定性可复现）
+- `observation_seq` 按 (secucode, report_date, table_type, source_name) 分组（旧数据迁移 source_name 统一为 'eastmoney'），按 `notice_date, crawled_at, rowid` 排序自增（P1-2 修复：notice_date 为 NULL 时回退到 crawled_at 再到 rowid，确保确定性可复现）
 - `is_superseded`：同组内仅最新（排序最大）为 0，其余为 1
 - `revision_type`：旧数据迁移统一标 `unknown`（不编造修订类型）
 - **迁移是复制不是移动**：旧 raw_* 表数据保留不删除
@@ -306,8 +306,7 @@ CREATE INDEX IF NOT EXISTS idx_fcl_run ON feature_compute_log(compute_run_id);
 - 币种（`currency`）、金额计量（`amount_unit`）
 - 合并范围（`consolidate_scope`）
 - 期间基准（`period_basis`）
-- 可比基准标识（`comparison_basis_id`，若有）
-- 映射版本（`mapping_version`，若有）
+- 可比基准标识与映射版本：阶段 2 单一来源（eastmoney）下口径固定，这两项暂不作为独立列存储，其语义已由上述维度（scope/period_basis/currency 等）覆盖；若后续引入多来源或多映射版本，再新增列纳入哈希计算
 
 值不变但语义变化（如 CNY→USD、合并→母公司、累计→单季）时 semantic_hash 不同，生成新版本而非就地修改旧版本。重复抓取同一内容仍保留新观察记录与 snapshot 关系，不丢弃后续引用。
 
