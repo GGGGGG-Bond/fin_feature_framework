@@ -83,9 +83,10 @@ def previous_report_date(report_date: str) -> str | None:
     prev_month = prev_month_map.get(month)
     if prev_month is None:
         return None
-    # 年报的上一报告期是同年Q3；其他报告期的上一报告期是同年更早的季度
-    if month == 12:
-        prev_year = dt.year
+    # Q1(3月)的上一报告期是上一年Q4(12月)，需要年份减一
+    # 其他报告期的上一报告期是同年更早的季度
+    if prev_month > month:
+        prev_year = dt.year - 1
     else:
         prev_year = dt.year
     # 构造上一报告期日期（取该月最后一天）

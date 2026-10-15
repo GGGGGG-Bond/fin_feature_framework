@@ -51,20 +51,38 @@ def test_dedup_keeps_latest_notice_date(repo):
 
 
 def test_outlier_threshold(repo):
-    """超出阈值的字段应置 NULL。
+    """超出阈值的字段应记日志但保留原值（stage1-v1）。
 
-    stage1-v1 阈值（标准单位：小数）：
+    stage1-v1: 标准化后判断阈值；超标只记 clean_log，不清空原值。
+    阈值（标准单位：小数）：
     - weightavg_roe: [-2.0, 2.0]
     - gross_margin: [-1.0, 1.0]
     """
+    # 原百分值 5.0（小数 0.05）在阈值内，应保留
     record = {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
-        "weightavg_roe": 5.0,    # 超出 [-2.0, 2.0]（500%）
-        "gross_margin": 1.5,     # 超出 [-1.0, 1.0]（150%）
+        "weightavg_roe": 5.0,    # 百分值 5%，标准化 0.05，在 [-2,2] 内
+        "gross_margin": 1.5,     # 百分值 1.5%，标准化 0.015，在 [-1,1] 内
     }
     fixed = detect_and_fix(repo, "financial_indicator", record)
-    assert fixed["weightavg_roe"] is None
-    assert fixed["gross_margin"] is None
+    # 原值保留，不清空
+    assert fixed["weightavg_roe"] == 5.0
+    assert fixed["gross_margin"] == 1.5
+
+    # 真正超标的值：原百分值 500.0（标准化 5.0）超出 [-2,2]
+    record_big = {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "weightavg_roe": 500.0,  # 标准化 5.0，超出 [-2.0, 2.0]
+        "gross_margin": 150.0,   # 标准化 1.5，超出 [-1.0, 1.0]
+    }
+    fixed_big = detect_and_fix(repo, "financial_indicator", record_big)
+    # 超标仍保留原值（只记日志）
+    assert fixed_big["weightavg_roe"] == 500.0
+    assert fixed_big["gross_margin"] == 150.0
+    # 验证 clean_log 有诊断记录
+    logs = repo.get_clean_logs()
+    outlier_logs = [l for l in logs if l["action"] == "outlier_threshold"]
+    assert len(outlier_logs) >= 2  # 两个字段都记了日志
 
     # 正常值应保留
     record2 = {
@@ -78,13 +96,18 @@ def test_outlier_threshold(repo):
 
 
 def test_outlier_negative_on_positive_field(repo):
-    """应为正的字段出现负值应置 NULL。"""
+    """应为正的字段出现负值应记日志但保留原值（stage1-v1）。"""
     record = {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
         "total_assets": -1000.0,  # 总资产不应为负
     }
     fixed = detect_and_fix(repo, "balance_sheet", record)
-    assert fixed["total_assets"] is None
+    # 原值保留（只记日志）
+    assert fixed["total_assets"] == -1000.0
+    # 验证 clean_log 有诊断（阈值或负值检查均可触发）
+    logs = repo.get_clean_logs()
+    diag_logs = [l for l in logs if l["action"] in ("outlier_threshold", "outlier_negative")]
+    assert len(diag_logs) >= 1
 
 
 def test_missing_drop(repo):

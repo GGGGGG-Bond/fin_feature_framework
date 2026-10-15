@@ -41,6 +41,7 @@ def _next_period_profit_yoy(
         "SELECT feature_value FROM features "
         "WHERE secucode = ? AND feature_name = 'profit_yoy' "
         "AND report_date > ? AND feature_value IS NOT NULL "
+        "AND definition_version = 'stage1-v1' "
         "ORDER BY report_date ASC LIMIT 1"
     )
     row = repo.conn.execute(sql, (secucode, formation_date)).fetchone()

@@ -3,7 +3,9 @@
 定义版本：stage1-v1
 - 资产负债率、权益比率输出小数（0.6 表示 60%）
 - 变化值输出百分点（如 0.55→0.60 输出 5.0）
-- 流动比率单位未知时不强行计算
+- 流动比率单位未知时不强行计算（unknown_unit）
+- 资产负债率水平与变化均使用 BS 自算 L/A，口径一致
+- 不猜测单位；输入由标准化入口保证
 """
 
 from fin_feature.features.base import Feature, FeatureContext
@@ -15,13 +17,14 @@ class DebtAssetRatioChange(Feature):
     """资产负债率变化 = 当期 - 上期（百分点）。
 
     定义版本：stage1-v1
+    使用 BS 自算的 debt_asset_ratio（L/A 小数），与水平定义一致
     输入为小数时输出百分点差值：(0.60 - 0.55) * 100 = 5.0
-    兼容旧百分数输入：60.0 - 55.0 = 5.0
+    不猜测单位；debt_asset_ratio 由上下文层预算
     """
 
     name = "debt_asset_ratio_change"
     group = "solvency"
-    description = "资产负债率变化（当期 - 上期，百分点）"
+    description = "资产负债率变化（当期 - 上期，百分点，使用自算 L/A）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
         current = ctx.current.get("debt_asset_ratio")
@@ -30,14 +33,8 @@ class DebtAssetRatioChange(Feature):
         previous = ctx.previous.get("debt_asset_ratio")
         if current is None or previous is None:
             return None
-        # 检测输入格式：>1 可能是百分数，<=1 可能是小数
-        # 百分数输入直接返回差值，小数输入转百分点
-        if abs(current) <= 1.0 and abs(previous) <= 1.0:
-            # 小数输入：(0.60 - 0.55) * 100 = 5.0 个百分点
-            return (current - previous) * 100
-        else:
-            # 百分数输入兼容：60.0 - 55.0 = 5.0 个百分点
-            return current - previous
+        # 自算 L/A 为小数：(0.60 - 0.55) * 100 = 5.0 个百分点
+        return (current - previous) * 100
 
 
 @FeatureRegistry.register
@@ -45,7 +42,8 @@ class CurrentRatioChange(Feature):
     """流动比率变化 = 当期 - 上期（倍数差）。
 
     定义版本：stage1-v1
-    流动比率单位需预先验证，未知单位时不计算
+    流动比率单位需预先验证，未知单位时不计算（unknown_unit）
+    标准化入口对 current_ratio 未知单位返回 None
     """
 
     name = "current_ratio_change"
@@ -85,15 +83,13 @@ class DebtAssetRatio(Feature):
     """资产负债率 = 总负债 / 总资产（小数）。
 
     定义版本：stage1-v1
-    允许结果超过 1（资不抵债）
+    使用 BS 自算值（由上下文层预算），允许结果超过 1（资不抵债）
     """
 
     name = "debt_asset_ratio"
     group = "solvency"
-    description = "资产负债率 = 总负债 / 总资产（小数，可超过 1）"
+    description = "资产负债率 = 总负债 / 总资产（小数，可超过 1，自算）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
-        # 优先使用 BS 自算值
-        liabilities = ctx.current.get("total_liabilities")
-        assets = ctx.current.get("total_assets")
-        return self.safe_divide(liabilities, assets)
+        # 使用上下文层预算的自算值
+        return ctx.current.get("debt_asset_ratio")

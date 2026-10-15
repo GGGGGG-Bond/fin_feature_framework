@@ -160,34 +160,90 @@ class Repository:
         feature_name: str,
         feature_value: float | None,
         feature_group: str,
+        definition_version: str = "stage1-v1",
     ) -> None:
-        """upsert 单条特征。"""
+        """upsert 单条特征。
+
+        stage1-v1: 新写入标 definition_version。
+        同主键 legacy 行（definition_version IS NULL）默认拒写，保护旧结果。
+        """
+        # 检查同主键是否存在 legacy 行
+        existing = self.conn.execute(
+            "SELECT definition_version FROM features "
+            "WHERE secucode = ? AND report_date = ? AND feature_name = ?",
+            (secucode, report_date, feature_name),
+        ).fetchone()
+        if existing is not None and existing[0] is None and definition_version is not None:
+            # legacy 行存在，拒绝覆盖
+            from fin_feature.utils.logger import setup_logger
+            logger = setup_logger("fin_feature.storage.repository")
+            logger.warning(
+                "拒绝覆盖 legacy 行: %s %s %s（请使用隔离新库）",
+                secucode, report_date, feature_name,
+            )
+            return
+
         sql = (
             "INSERT OR REPLACE INTO features "
-            "(secucode, report_date, feature_name, feature_value, feature_group) "
-            "VALUES (?, ?, ?, ?, ?)"
+            "(secucode, report_date, feature_name, feature_value, feature_group, definition_version) "
+            "VALUES (?, ?, ?, ?, ?, ?)"
         )
         with self.conn:
-            self.conn.execute(sql, (secucode, report_date, feature_name, feature_value, feature_group))
+            self.conn.execute(sql, (secucode, report_date, feature_name, feature_value, feature_group, definition_version))
 
     def batch_upsert_features(self, records: Iterable[dict]) -> int:
-        """批量 upsert 特征。records: [{secucode, report_date, feature_name, feature_value, feature_group}]"""
+        """批量 upsert 特征。
+
+        records: [{secucode, report_date, feature_name, feature_value, feature_group, definition_version}]
+        stage1-v1: 新写入标 definition_version；同主键 legacy 行默认拒写。
+        """
         rows = list(records)
         if not rows:
             return 0
+
+        # 检查同主键 legacy 行，过滤掉会覆盖 legacy 的记录
+        from fin_feature.utils.logger import setup_logger
+        logger = setup_logger("fin_feature.storage.repository")
+
+        safe_rows = []
+        rejected = 0
+        for r in rows:
+            existing = self.conn.execute(
+                "SELECT definition_version FROM features "
+                "WHERE secucode = ? AND report_date = ? AND feature_name = ?",
+                (r["secucode"], r["report_date"], r["feature_name"]),
+            ).fetchone()
+            dv = r.get("definition_version")
+            if existing is not None and existing[0] is None and dv is not None:
+                rejected += 1
+                continue
+            safe_rows.append(r)
+
+        if rejected:
+            logger.warning(
+                "拒绝覆盖 %d 条 legacy 行（请使用隔离新库）", rejected,
+            )
+
+        if not safe_rows:
+            return 0
+
         sql = (
             "INSERT OR REPLACE INTO features "
-            "(secucode, report_date, feature_name, feature_value, feature_group) "
-            "VALUES (:secucode, :report_date, :feature_name, :feature_value, :feature_group)"
+            "(secucode, report_date, feature_name, feature_value, feature_group, definition_version) "
+            "VALUES (:secucode, :report_date, :feature_name, :feature_value, :feature_group, :definition_version)"
         )
         with self.conn:
-            self.conn.executemany(sql, rows)
-        return len(rows)
+            self.conn.executemany(sql, safe_rows)
+        return len(safe_rows)
 
     def get_features(
-        self, secucode: str, report_date: str | None = None, feature_group: str | None = None
+        self, secucode: str, report_date: str | None = None, feature_group: str | None = None,
+        definition_version: str = "stage1-v1",
     ) -> list[sqlite3.Row]:
-        """查询特征，可按报告期和特征组过滤。"""
+        """查询特征，可按报告期、特征组和定义版本过滤。
+
+        stage1-v1: 默认只返回 stage1-v1 定义的特征，不混读 legacy 行。
+        """
         sql = "SELECT * FROM features WHERE secucode = ?"
         params: list[Any] = [secucode]
         if report_date is not None:
@@ -196,16 +252,29 @@ class Repository:
         if feature_group is not None:
             sql += " AND feature_group = ?"
             params.append(feature_group)
+        if definition_version is not None:
+            sql += " AND definition_version = ?"
+            params.append(definition_version)
         sql += " ORDER BY report_date, feature_name"
         return self.conn.execute(sql, params).fetchall()
 
-    def get_feature_series(self, feature_name: str, report_date: str) -> list[sqlite3.Row]:
-        """获取某特征在某报告期的全部公司取值（用于回测分组）。"""
+    def get_feature_series(
+        self, feature_name: str, report_date: str,
+        definition_version: str = "stage1-v1",
+    ) -> list[sqlite3.Row]:
+        """获取某特征在某报告期的全部公司取值（用于回测分组）。
+
+        stage1-v1: 默认只返回 stage1-v1 定义的特征。
+        """
         sql = (
             "SELECT secucode, feature_value FROM features "
             "WHERE feature_name = ? AND report_date = ? AND feature_value IS NOT NULL"
         )
-        return self.conn.execute(sql, (feature_name, report_date)).fetchall()
+        params: list[Any] = [feature_name, report_date]
+        if definition_version is not None:
+            sql += " AND definition_version = ?"
+            params.append(definition_version)
+        return self.conn.execute(sql, params).fetchall()
 
     # ------------------------------------------------------------------
     # 清洗日志
