@@ -364,3 +364,222 @@ class Repository:
         """获取某张表的总记录数。"""
         sql = f"SELECT COUNT(*) FROM {table_name}"
         return self.conn.execute(sql).fetchone()[0]
+
+    # ------------------------------------------------------------------
+    # 阶段 2 新增：采集批次 (ingest_run)
+    # ------------------------------------------------------------------
+    def create_ingest_run(
+        self,
+        source_name: str,
+        request_scope: str | None = None,
+        crawler_version: str | None = None,
+    ) -> str:
+        """创建采集批次，返回 run_id（UUID）。"""
+        import uuid
+        run_id = str(uuid.uuid4())
+        sql = """
+            INSERT INTO ingest_run (run_id, source_name, request_scope, crawler_version, status)
+            VALUES (?, ?, ?, ?, 'running')
+        """
+        with self.conn:
+            self.conn.execute(sql, (run_id, source_name, request_scope, crawler_version))
+        return run_id
+
+    def finish_ingest_run(
+        self,
+        run_id: str,
+        status: str,
+        failed_units: int = 0,
+        detail: str | None = None,
+    ) -> None:
+        """更新采集批次状态。"""
+        sql = """
+            UPDATE ingest_run
+            SET status = ?, failed_units = ?, detail = ?, ended_at = datetime('now', 'localtime')
+            WHERE run_id = ?
+        """
+        with self.conn:
+            self.conn.execute(sql, (status, failed_units, detail, run_id))
+
+    # ------------------------------------------------------------------
+    # 阶段 2 新增：原始响应留存 (raw_snapshot)
+    # ------------------------------------------------------------------
+    def save_raw_snapshot(
+        self,
+        run_id: str,
+        source_name: str,
+        report_name: str,
+        secucode: str | None,
+        page_number: int,
+        request_params: str,
+        raw_content_hash: str,
+        file_path: str,
+        record_count: int,
+    ) -> str:
+        """保存原始响应记录，返回 snapshot_id（UUID）。"""
+        import uuid
+        snapshot_id = str(uuid.uuid4())
+        sql = """
+            INSERT INTO raw_snapshot
+            (snapshot_id, run_id, source_name, report_name, secucode, page_number,
+             request_params, raw_content_hash, file_path, record_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with self.conn:
+            self.conn.execute(
+                sql,
+                (snapshot_id, run_id, source_name, report_name, secucode, page_number,
+                 request_params, raw_content_hash, file_path, record_count),
+            )
+        return snapshot_id
+
+    # ------------------------------------------------------------------
+    # 阶段 2 新增：标准化版本与血缘 (statement_version)
+    # ------------------------------------------------------------------
+    def create_statement_version(
+        self,
+        secucode: str,
+        report_date: str,
+        table_type: str,
+        source_name: str = "eastmoney",
+        snapshot_id: str | None = None,
+        run_id: str | None = None,
+        notice_date: str | None = None,
+        revision_notice_date: str | None = None,
+        revision_type: str = "unknown",
+        metric_hash: str = "",
+        semantic_hash: str = "",
+        consolidate_scope: str = "unknown",
+        period_basis: str = "unknown",
+        currency: str = "unknown",
+        amount_unit: str = "unknown",
+        industry_type: str = "unknown",
+        standardized_fields: str | None = None,
+        raw_fields: str | None = None,
+        evidence_sufficient: int = 1,
+    ) -> str:
+        """创建标准化版本记录，处理 observation_seq 自增和旧版本替代。
+
+        返回 version_id（UUID）。
+        """
+        import uuid
+
+        # 获取下一 observation_seq
+        cur = self.conn.execute("""
+            SELECT COALESCE(MAX(observation_seq), 0) + 1
+            FROM statement_version
+            WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
+        """, (secucode, report_date, table_type, source_name))
+        next_seq = cur.fetchone()[0]
+
+        version_id = str(uuid.uuid4())
+
+        sql = """
+            INSERT INTO statement_version
+            (version_id, snapshot_id, run_id, secucode, report_date, table_type, source_name,
+             notice_date, revision_notice_date, revision_type, metric_hash, semantic_hash,
+             observation_seq, consolidate_scope, period_basis, currency, amount_unit,
+             industry_type, standardized_fields, raw_fields, evidence_sufficient)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with self.conn:
+            self.conn.execute(
+                sql,
+                (version_id, snapshot_id, run_id, secucode, report_date, table_type, source_name,
+                 notice_date, revision_notice_date, revision_type, metric_hash, semantic_hash,
+                 next_seq, consolidate_scope, period_basis, currency, amount_unit,
+                 industry_type, standardized_fields, raw_fields, evidence_sufficient),
+            )
+
+            # 标记旧版本为替代（同分组内仅最新为 0）
+            self.conn.execute("""
+                UPDATE statement_version
+                SET is_superseded = 1, superseded_by = ?
+                WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
+                  AND version_id != ?
+            """, (version_id, secucode, report_date, table_type, source_name, version_id))
+
+        return version_id
+
+    def get_latest_statement_version(
+        self, secucode: str, report_date: str, table_type: str, source_name: str = "eastmoney"
+    ) -> sqlite3.Row | None:
+        """获取最新非替代版本。"""
+        sql = """
+            SELECT * FROM statement_version
+            WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
+              AND is_superseded = 0
+            ORDER BY observation_seq DESC
+            LIMIT 1
+        """
+        return self.conn.execute(
+            sql, (secucode, report_date, table_type, source_name)
+        ).fetchone()
+
+    def get_statement_versions(
+        self, secucode: str, report_date: str, table_type: str, source_name: str = "eastmoney"
+    ) -> list[sqlite3.Row]:
+        """获取全部版本历史（按 observation_seq 升序）。"""
+        sql = """
+            SELECT * FROM statement_version
+            WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
+            ORDER BY observation_seq ASC
+        """
+        return self.conn.execute(
+            sql, (secucode, report_date, table_type, source_name)
+        ).fetchall()
+
+    def get_latest_versions_for_report(
+        self, secucode: str, report_date: str
+    ) -> dict[str, sqlite3.Row]:
+        """获取同一 report_date 三表（FI/IS/BS）各自的最新非替代版本。
+
+        返回：{"financial_indicator": Row, "income_statement": Row, "balance_sheet": Row}
+        """
+        result = {}
+        for table_type in ["financial_indicator", "income_statement", "balance_sheet"]:
+            row = self.get_latest_statement_version(secucode, report_date, table_type)
+            if row is not None:
+                result[table_type] = row
+        return result
+
+    # ------------------------------------------------------------------
+    # 阶段 2 新增：不可变计算记录 (feature_compute_log)
+    # ------------------------------------------------------------------
+    def save_compute_log(
+        self,
+        compute_run_id: str,
+        secucode: str,
+        report_date: str,
+        feature_name: str,
+        definition_version: str,
+        input_version_ids: str,
+        feature_value: float | None,
+        not_computable_reason: str | None,
+        code_commit: str | None,
+        config_snapshot: str | None,
+        as_of_date: str | None,
+    ) -> str:
+        """写入不可变计算记录，返回 result_id（UUID）。"""
+        import uuid
+        result_id = str(uuid.uuid4())
+        sql = """
+            INSERT INTO feature_compute_log
+            (result_id, compute_run_id, secucode, report_date, feature_name,
+             definition_version, input_version_ids, feature_value, not_computable_reason,
+             code_commit, config_snapshot, as_of_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with self.conn:
+            self.conn.execute(
+                sql,
+                (result_id, compute_run_id, secucode, report_date, feature_name,
+                 definition_version, input_version_ids, feature_value, not_computable_reason,
+                 code_commit, config_snapshot, as_of_date),
+            )
+        return result_id
+
+    def get_compute_log(self, result_id: str) -> sqlite3.Row | None:
+        """按 result_id 读取计算记录及其 input_version_ids（重放入口）。"""
+        sql = "SELECT * FROM feature_compute_log WHERE result_id = ?"
+        return self.conn.execute(sql, (result_id,)).fetchone()

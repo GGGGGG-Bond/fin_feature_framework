@@ -277,3 +277,165 @@ ALL_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_clean_log_code ON clean_log(secucode);",
     "CREATE INDEX IF NOT EXISTS idx_watermark_source ON crawl_watermark(source_name);",
 ]
+
+# ========== 阶段 2 新增表（2A）==========
+
+# 1. 迁移版本管理
+DDL_SCHEMA_VERSION = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version         INTEGER PRIMARY KEY,
+    name            TEXT NOT NULL,
+    applied_at      TEXT DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# 2. 采集批次
+DDL_INGEST_RUN = """
+CREATE TABLE IF NOT EXISTS ingest_run (
+    run_id          TEXT PRIMARY KEY,          -- UUID
+    source_name     TEXT NOT NULL,             -- eastmoney
+    request_scope   TEXT,                      -- JSON: {report_names, secucodes, recent_periods}
+    started_at      TEXT DEFAULT (datetime('now', 'localtime')),
+    ended_at        TEXT,
+    status          TEXT NOT NULL DEFAULT 'running',  -- running/success/partial_failure/failed
+    failed_units    INTEGER DEFAULT 0,
+    crawler_version TEXT,                      -- 采集器版本标识
+    detail          TEXT                       -- 失败原因摘要
+);
+"""
+
+# 3. 原始响应留存
+DDL_RAW_SNAPSHOT = """
+CREATE TABLE IF NOT EXISTS raw_snapshot (
+    snapshot_id      TEXT PRIMARY KEY,          -- UUID
+    run_id           TEXT NOT NULL,             -- 关联采集批次
+    source_name      TEXT NOT NULL,
+    report_name      TEXT NOT NULL,             -- RPT_LICO_FN_CPD 等
+    secucode         TEXT,                      -- 可空（股票列表请求无公司）
+    page_number      INTEGER,
+    request_params   TEXT,                      -- JSON（去除凭据）
+    fetched_at       TEXT DEFAULT (datetime('now', 'localtime')),
+    raw_content_hash TEXT NOT NULL,             -- SHA-256（原始响应 JSON，仅用于去重）
+    file_path        TEXT NOT NULL,             -- 不可变内容文件路径
+    record_count     INTEGER,
+    FOREIGN KEY (run_id) REFERENCES ingest_run(run_id)
+);
+"""
+
+# 4. 标准化版本与血缘（核心表）
+DDL_STATEMENT_VERSION = """
+CREATE TABLE IF NOT EXISTS statement_version (
+    version_id           TEXT PRIMARY KEY,          -- UUID
+    snapshot_id          TEXT,                       -- 关联原始响应（旧数据迁移为 NULL）
+    run_id               TEXT,                       -- 关联采集批次（旧数据迁移为 NULL）
+    secucode             TEXT NOT NULL,
+    report_date          TEXT NOT NULL,
+    table_type           TEXT NOT NULL,             -- financial_indicator/income_statement/balance_sheet
+    source_name          TEXT NOT NULL DEFAULT 'eastmoney',  -- 来源（observation_seq 分组维度之一）
+    notice_date          TEXT,                      -- 公告时间
+    revision_notice_date TEXT,                      -- 修订公告时间（未知为 NULL）
+    revision_type        TEXT DEFAULT 'unknown',    -- initial/revision/error_correction/unknown
+    observed_at          TEXT DEFAULT (datetime('now', 'localtime')),  -- 系统观察时间
+    metric_hash          TEXT NOT NULL,             -- SHA-256（仅标准化字段值，检测数值变化）
+    semantic_hash        TEXT NOT NULL,             -- SHA-256（版本身份：字段值 + 来源 + 币种/计量+scope+period_basis 等）
+    observation_seq      INTEGER NOT NULL,          -- 同一(secucode,report_date,table_type,source_name)内自增
+    consolidate_scope    TEXT DEFAULT 'unknown',    -- consolidated/parent_only/unknown
+    period_basis         TEXT DEFAULT 'unknown',    -- flow_ytd/flow_single_quarter/stock_end/unknown
+    currency             TEXT DEFAULT 'unknown',
+    amount_unit          TEXT DEFAULT 'unknown',
+    industry_type        TEXT DEFAULT 'unknown',    -- industrial/financial/unknown
+    standardized_fields  TEXT,                      -- JSON: 标准化字段快照
+    raw_fields           TEXT,                      -- JSON: 原始字段快照（映射后）
+    evidence_sufficient  INTEGER DEFAULT 1,         -- 1=有原始响应；0=旧数据迁移（无原始响应）
+    is_superseded        INTEGER DEFAULT 0,         -- 0=当前有效；1=已被新版本替代
+    superseded_by        TEXT,                      -- 指向替代版本 version_id
+    FOREIGN KEY (snapshot_id) REFERENCES raw_snapshot(snapshot_id),
+    FOREIGN KEY (run_id) REFERENCES ingest_run(run_id),
+    UNIQUE (secucode, report_date, table_type, source_name, observation_seq)
+);
+"""
+
+# 5. 双源核验结果（阶段 3 用，阶段 2 仅预留表结构）
+DDL_RECONCILIATION_RESULT = """
+CREATE TABLE IF NOT EXISTS reconciliation_result (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    left_version_id     TEXT NOT NULL,
+    right_version_id    TEXT NOT NULL,
+    field_name          TEXT NOT NULL,
+    comparable_status   TEXT,                      -- comparable/incomparable/unknown
+    left_value          REAL,
+    right_value         REAL,
+    converted_value     REAL,
+    tolerance           REAL,
+    difference          REAL,
+    conclusion          TEXT,                      -- match/conflict/unknown
+    evidence            TEXT,                      -- JSON: 证据引用
+    reconciled_at       TEXT DEFAULT (datetime('now', 'localtime')),
+    FOREIGN KEY (left_version_id) REFERENCES statement_version(version_id),
+    FOREIGN KEY (right_version_id) REFERENCES statement_version(version_id)
+);
+"""
+
+# 6. 不可变计算记录（A3 修复：重放绑定确切计算实例）
+DDL_FEATURE_COMPUTE_LOG = """
+CREATE TABLE IF NOT EXISTS feature_compute_log (
+    result_id              TEXT PRIMARY KEY,          -- UUID，唯一标识一次计算
+    compute_run_id         TEXT NOT NULL,             -- 同次批量计算共享
+    secucode               TEXT NOT NULL,
+    report_date            TEXT NOT NULL,
+    feature_name           TEXT NOT NULL,
+    definition_version     TEXT NOT NULL,             -- stage1-v1 等
+    input_version_ids      TEXT NOT NULL,             -- JSON: 当期/同比期/相邻期/差分期各表输入的 version_id
+    feature_value          REAL,                      -- 计算结果（None 时为 NULL）
+    not_computable_reason  TEXT,                      -- missing_input/non_positive_base/not_applicable 等
+    code_commit            TEXT,                      -- 计算时 git commit
+    config_snapshot        TEXT,                      -- JSON: 规范化的实际生效配置（含默认值与运行覆盖）
+    as_of_date             TEXT,                      -- 计算时点
+    computed_at            TEXT DEFAULT (datetime('now', 'localtime')),
+    FOREIGN KEY (compute_run_id) REFERENCES ingest_run(run_id)
+);
+"""
+
+# features 表加列（6 列，幂等 ALTER TABLE，由迁移执行）
+DDL_FEATURES_ADD_COLUMNS = """
+ALTER TABLE features ADD COLUMN compute_run_id TEXT;
+ALTER TABLE features ADD COLUMN input_version_ids TEXT;
+ALTER TABLE features ADD COLUMN code_commit TEXT;
+ALTER TABLE features ADD COLUMN config_hash TEXT;
+ALTER TABLE features ADD COLUMN as_of_date TEXT;
+ALTER TABLE features ADD COLUMN not_computable_reason TEXT;
+"""
+
+# 阶段 2 新增索引
+ALL_INDEXES_STAGE2 = [
+    "CREATE INDEX IF NOT EXISTS idx_sv_secucode ON statement_version(secucode);",
+    "CREATE INDEX IF NOT EXISTS idx_sv_report_date ON statement_version(report_date);",
+    "CREATE INDEX IF NOT EXISTS idx_sv_table_type ON statement_version(table_type);",
+    "CREATE INDEX IF NOT EXISTS idx_sv_current ON statement_version(secucode, report_date, table_type, is_superseded);",
+    "CREATE INDEX IF NOT EXISTS idx_raw_snap_run ON raw_snapshot(run_id);",
+    "CREATE INDEX IF NOT EXISTS idx_ingest_run_status ON ingest_run(status);",
+    "CREATE INDEX IF NOT EXISTS idx_fcl_lookup ON feature_compute_log(secucode, report_date, feature_name);",
+    "CREATE INDEX IF NOT EXISTS idx_fcl_run ON feature_compute_log(compute_run_id);",
+]
+
+# 更新 ALL_DDL（按依赖顺序，供 migrate_v1_baseline 使用）
+ALL_DDL = [
+    DDL_STOCK_LIST,
+    DDL_RAW_FINANCIAL_INDICATOR,
+    DDL_RAW_INCOME_STATEMENT,
+    DDL_RAW_BALANCE_SHEET,
+    DDL_CLEAN_FINANCIAL_INDICATOR,
+    DDL_CLEAN_INCOME_STATEMENT,
+    DDL_CLEAN_BALANCE_SHEET,
+    DDL_FEATURES,
+    DDL_CLEAN_LOG,
+    DDL_CRAWL_WATERMARK,
+    DDL_QUALITY_REPORT,
+    # 阶段 2 新增
+    DDL_SCHEMA_VERSION,
+    DDL_INGEST_RUN,
+    DDL_RAW_SNAPSHOT,
+    DDL_STATEMENT_VERSION,
+    DDL_RECONCILIATION_RESULT,
+    DDL_FEATURE_COMPUTE_LOG,
+]
