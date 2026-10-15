@@ -54,6 +54,25 @@ def _row_to_dict(row) -> dict:
     return dict(row) if row is not None else None
 
 
+# 金融行业关键词（用于从 industry_name 推断 industry_type）
+_FINANCIAL_KEYWORDS = ("银行", "保险", "证券", "金融", "信托", "期货")
+
+
+def _resolve_industry_type(merged: dict) -> str:
+    """从合并数据中解析行业类型。
+
+    T16: 将 industry_name 映射为 industrial/financial/unknown。
+    不靠证券名称或数值猜测，仅依据来源提供的行业名称。
+    金融企业相关指标返回 None + not_applicable。
+    """
+    industry_name = merged.get("industry_name")
+    if not industry_name or not isinstance(industry_name, str):
+        return "unknown"
+    if any(kw in industry_name for kw in _FINANCIAL_KEYWORDS):
+        return "financial"
+    return "industrial"
+
+
 def _standardize_merged(merged: dict) -> tuple[dict, list[dict]]:
     """对语义合并后的记录做标准化。
 
@@ -348,6 +367,8 @@ def _build_context(
         previous_sq=previous_sq,
         # P2 #3: 统一初始化为非 None list，特征计算时可追加原因
         diagnostics=all_diags,
+        # T16: 行业元信息贯穿到特征上下文
+        industry_type=_resolve_industry_type(merged),
     )
 
 

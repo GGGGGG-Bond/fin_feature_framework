@@ -51,6 +51,16 @@ class CurrentRatioChange(Feature):
     description = "流动比率变化（当期 - 上期，倍数差）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
+        # T16: 金融企业流动比率口径与工业企业不同，返回 None + not_applicable
+        if ctx.industry_type == "financial":
+            if ctx.diagnostics is not None:
+                ctx.diagnostics.append({
+                    "field": "current_ratio",
+                    "feature": "current_ratio_change",
+                    "reason_code": "not_applicable",
+                    "detail": "金融企业流动比率口径与工业企业不同",
+                })
+            return None
         current = ctx.current.get("current_ratio")
         if ctx.previous is None:
             return None

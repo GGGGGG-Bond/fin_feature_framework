@@ -30,6 +30,7 @@ class FeatureContext:
     current_sq: dict[str, Any] | None = None   # 当期单季值（标准化）
     previous_sq: dict[str, Any] | None = None  # 上一报告期单季值（标准化）
     diagnostics: list[dict] | None = None     # 结构化诊断
+    industry_type: str = "unknown"     # industrial/financial/unknown（T16：行业元信息贯穿）
 
 
 class Feature(ABC):
