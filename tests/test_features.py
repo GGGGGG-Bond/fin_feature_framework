@@ -735,3 +735,136 @@ def test_diagnostics_initialized_non_none_in_context(repo):
     assert ctx.diagnostics is not None
     assert isinstance(ctx.diagnostics, list)
 
+
+# ---------------------------------------------------------------------------
+# 派生值与差分链门禁测试（第四轮 P1：路径 A 和路径 B）
+# ---------------------------------------------------------------------------
+
+def test_debt_asset_ratio_change_blocked_when_incomparable(repo):
+    """路径 A: 原始资产/负债被阻断后，派生负债率变化必须为 None。
+
+    审阅复现：两期 BS 资产/负债来源未验证（comparable=False），
+    DebtAssetRatioChange 仍输出约 5 个百分点是错误的。
+    修复后：原始字段被阻断 → 派生比率同步失效 → 变化为 None。
+    """
+    # 当期 BS
+    repo.upsert_clean("balance_sheet", {
+        "secucode": "002501.SZ", "report_date": "2024-06-30",
+        "total_assets": 100.0, "total_liabilities": 60.0,
+        "total_equity": 40.0,
+    })
+    # 上一报告期 BS（来源未验证）
+    repo.upsert_clean("balance_sheet", {
+        "secucode": "002501.SZ", "report_date": "2024-03-31",
+        "total_assets": 100.0, "total_liabilities": 55.0,
+        "total_equity": 45.0,
+    })
+
+    ctx = _build_context(repo, "002501.SZ", "2024-06-30")
+    assert ctx is not None
+
+    # 原始字段被阻断
+    assert ctx.previous is not None
+    assert ctx.previous.get("total_assets") is None
+    assert ctx.previous.get("total_liabilities") is None
+    # 派生比率应同步失效（路径 A 修复）
+    assert ctx.previous.get("debt_asset_ratio") is None
+
+    # 跨期负债率变化必须为 None
+    feat = solvency.DebtAssetRatioChange()
+    assert feat.calculate(ctx) is None
+
+    # 当期负债率仍可独立计算（不破坏当期合法值）
+    feat_level = solvency.DebtAssetRatio()
+    assert feat_level.calculate(ctx) == 0.6
+
+
+def test_debt_asset_ratio_change_comparable(repo):
+    """路径 A: 显式可比的 55%→60% 应为 5.0。
+
+    使用受控 fixture 显式声明可比，验证放行路径正确。
+    """
+    from fin_feature.features.semantic import FieldSource
+
+    ctx = FeatureContext(
+        secucode="002501.SZ", report_date="2024-06-30",
+        current={
+            "debt_asset_ratio": 0.60,
+            "__sources__": {
+                "total_assets": FieldSource("balance_sheet", comparable=True),
+                "total_liabilities": FieldSource("balance_sheet", comparable=True),
+            },
+        },
+        previous={
+            "debt_asset_ratio": 0.55,
+            "__sources__": {
+                "total_assets": FieldSource("balance_sheet", comparable=True),
+                "total_liabilities": FieldSource("balance_sheet", comparable=True),
+            },
+        },
+        year_ago=None, current_sq=None, previous_sq=None,
+        diagnostics=[],
+    )
+
+    feat = solvency.DebtAssetRatioChange()
+    assert abs(feat.calculate(ctx) - 5.0) < 1e-9
+
+
+def test_q1_qoq_blocked_when_q3_incomparable(repo):
+    """路径 B: Q3 存在但口径未知时 Q1 QoQ 为 None。
+
+    审阅复现：当期 Q1=180、上一年全年=450 显式可比，
+    上一年 Q3=300 不可比 → previous_sq 应拒绝 → QoQ 为 None。
+    """
+    from unittest.mock import patch
+    from fin_feature.features.semantic import FieldSource, merge_three_tables_semantic
+
+    # 当期 Q1
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2024-03-31",
+        "total_operate_income": 180.0, "parent_netprofit": 20.0,
+    })
+    # 上一报告期 = 2023-12-31（FY）
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2023-12-31",
+        "total_operate_income": 450.0, "parent_netprofit": 90.0,
+    })
+    # prev_prev = 2023-09-30（Q3），存在但口径未知
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2023-09-30",
+        "total_operate_income": 300.0, "parent_netprofit": 60.0,
+    })
+
+    ctx = _build_context(repo, "002501.SZ", "2024-03-31")
+    assert ctx is not None
+
+    # previous_sq 应为 None（previous 与 prev_prev 不可比，差分被阻断）
+    # QoQ 应为 None
+    feat = growth.RevenueQoQ()
+    assert feat.calculate(ctx) is None
+
+
+def test_q1_qoq_comparable_chain(repo):
+    """路径 B: 全部必要输入显式可比时，300/450/180 的例子应为 0.2。
+
+    Q1=180, FY去年=450, Q3去年=300 → Q4单季=150 → QoQ=(180-150)/150=0.2
+    使用受控 fixture 显式声明可比。
+    """
+    from fin_feature.features.semantic import FieldSource
+
+    # 构造受控上下文：current_sq=180, previous_sq=150（Q4单季=450-300）
+    ctx = FeatureContext(
+        secucode="002501.SZ", report_date="2024-03-31",
+        current={"total_operate_income": 180.0},
+        previous={"total_operate_income": 450.0},
+        year_ago=None,
+        current_sq={"total_operate_income": 180.0},  # Q1 单季
+        previous_sq={"total_operate_income": 150.0},  # Q4单季 = 450-300
+        diagnostics=[],
+    )
+
+    feat = growth.RevenueQoQ()
+    result = feat.calculate(ctx)
+    assert result is not None
+    assert abs(result - 0.2) < 1e-9
+

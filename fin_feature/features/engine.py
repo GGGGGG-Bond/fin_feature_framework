@@ -281,8 +281,10 @@ def _build_context(
             previous = _compute_self_calculated_ratios(previous)
             all_diags.extend(prev_merge_diags)
             all_diags.extend(prev_std_diags)
-            # P1 #1: 跨周期可比性检查（环比基准）
+            # P1 #1: 跨周期可比性检查（环比基准），阻断不可比字段
             all_diags.extend(_check_period_comparability(current, previous, "上一报告期"))
+            # 路径 A 修复：原始字段被阻断后，重新计算派生比率使其同步失效
+            previous = _compute_self_calculated_ratios(previous)
 
     # 4. 查找去年同期（同比基准）
     ya_date = year_ago_report_date(report_date)
@@ -294,8 +296,10 @@ def _build_context(
             year_ago = _compute_self_calculated_ratios(year_ago)
             all_diags.extend(ya_merge_diags)
             all_diags.extend(ya_std_diags)
-            # P1 #1: 跨周期可比性检查（同比基准）
+            # P1 #1: 跨周期可比性检查（同比基准），阻断不可比字段
             all_diags.extend(_check_period_comparability(current, year_ago, "去年同期"))
+            # 路径 A 修复：原始字段被阻断后，重新计算派生比率使其同步失效
+            year_ago = _compute_self_calculated_ratios(year_ago)
 
     # 5. 计算当期单季值
     current_sq, sq_reason = _compute_single_quarter(
@@ -316,6 +320,12 @@ def _build_context(
             pp_merged, _ = merge_three_tables_semantic(repo, secucode, prev_prev_date)
             if any(pp_merged.get(f) is not None for f in _STANDARDIZE_FIELDS):
                 prev_prev, _ = _standardize_merged(pp_merged)
+                prev_prev = _compute_self_calculated_ratios(prev_prev)
+                # 路径 B 修复：previous 与 prev_prev 的累计差分需要可比性门禁
+                all_diags.extend(_check_period_comparability(
+                    previous, prev_prev, "上一期累计基准"
+                ))
+                # 原始字段被阻断后，重新计算派生比率
                 prev_prev = _compute_self_calculated_ratios(prev_prev)
 
         previous_sq, prev_sq_reason = _compute_single_quarter(
