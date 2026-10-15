@@ -6,6 +6,7 @@
 from fin_feature.features.base import Feature, FeatureContext
 from fin_feature.features.engine import _build_context, compute_all
 from fin_feature.features.registry import FeatureRegistry
+from fin_feature.features.semantic import merge_three_tables_semantic
 from fin_feature.features import profitability, growth, solvency  # noqa: F401 触发注册
 from fin_feature.storage.repository import Repository
 
@@ -779,45 +780,75 @@ def test_debt_asset_ratio_change_blocked_when_incomparable(repo):
     assert feat_level.calculate(ctx) == 0.6
 
 
-def test_debt_asset_ratio_change_comparable(repo):
-    """路径 A: 显式可比的 55%→60% 应为 5.0。
+def _make_comparable_merge(repo, secucode, report_date, table_suffix, **fields):
+    """构造可比的语义合并结果（供受控 fixture 经真实 _build_context 门禁验证）。
 
-    使用受控 fixture 显式声明可比，验证放行路径正确。
+    写入 clean 记录并返回一个 mock merge 函数，该函数对指定报告期返回
+    带 comparable=True 的 FieldSource，模拟已验证同口径。
     """
+    from unittest.mock import patch
     from fin_feature.features.semantic import FieldSource
 
-    ctx = FeatureContext(
-        secucode="002501.SZ", report_date="2024-06-30",
-        current={
-            "debt_asset_ratio": 0.60,
-            "__sources__": {
-                "total_assets": FieldSource("balance_sheet", comparable=True),
-                "total_liabilities": FieldSource("balance_sheet", comparable=True),
-            },
-        },
-        previous={
-            "debt_asset_ratio": 0.55,
-            "__sources__": {
-                "total_assets": FieldSource("balance_sheet", comparable=True),
-                "total_liabilities": FieldSource("balance_sheet", comparable=True),
-            },
-        },
-        year_ago=None, current_sq=None, previous_sq=None,
-        diagnostics=[],
+    record = {"secucode": secucode, "report_date": report_date}
+    record.update(fields)
+    repo.upsert_clean(table_suffix, record)
+
+    # 返回 (patcher, merge_fn) —— merge_fn 模拟语义合并，标记字段可比
+    real_merge = merge_three_tables_semantic
+
+    def merge_fn(r, sc, rd):
+        merged, diags = real_merge(r, sc, rd)
+        sources = merged.get("__sources__", {})
+        for f, src in sources.items():
+            if hasattr(src, "comparable"):
+                src.comparable = True
+        return merged, diags
+
+    return merge_fn
+
+
+def test_debt_asset_ratio_change_comparable(repo):
+    """路径 A: 显式可比的 55%→60% 应为 5.0（经真实 _build_context 门禁）。
+
+    审阅建议：正例应经过引擎门禁，而非直接构造最终 FeatureContext。
+    """
+    from unittest.mock import patch
+
+    # 当期 BS
+    repo.upsert_clean("balance_sheet", {
+        "secucode": "002501.SZ", "report_date": "2024-06-30",
+        "total_assets": 100.0, "total_liabilities": 60.0,
+        "total_equity": 40.0,
+    })
+    # 上一报告期 BS
+    repo.upsert_clean("balance_sheet", {
+        "secucode": "002501.SZ", "report_date": "2024-03-31",
+        "total_assets": 100.0, "total_liabilities": 55.0,
+        "total_equity": 45.0,
+    })
+
+    merge_fn = _make_comparable_merge(
+        repo, "002501.SZ", "2024-06-30", "balance_sheet",
+        total_assets=100.0, total_liabilities=60.0,
     )
 
+    with patch("fin_feature.features.engine.merge_three_tables_semantic", side_effect=merge_fn):
+        ctx = _build_context(repo, "002501.SZ", "2024-06-30")
+    assert ctx is not None
+
+    # 显式可比 → 派生比率保留，变化为 5.0
     feat = solvency.DebtAssetRatioChange()
-    assert abs(feat.calculate(ctx) - 5.0) < 1e-9
+    result = feat.calculate(ctx)
+    assert result is not None
+    assert abs(result - 5.0) < 1e-9
 
 
 def test_q1_qoq_blocked_when_q3_incomparable(repo):
-    """路径 B: Q3 存在但口径未知时 Q1 QoQ 为 None。
+    """路径 B: Q3 存在但口径未知时 Q1 QoQ 为 None（经真实 _build_context 门禁）。
 
-    审阅复现：当期 Q1=180、上一年全年=450 显式可比，
-    上一年 Q3=300 不可比 → previous_sq 应拒绝 → QoQ 为 None。
+    审阅建议：前两期应显式放行，仅切换 Q3 标记，确保是路径 B 门禁拦截。
     """
     from unittest.mock import patch
-    from fin_feature.features.semantic import FieldSource, merge_three_tables_semantic
 
     # 当期 Q1
     repo.upsert_clean("income_statement", {
@@ -835,34 +866,68 @@ def test_q1_qoq_blocked_when_q3_incomparable(repo):
         "total_operate_income": 300.0, "parent_netprofit": 60.0,
     })
 
-    ctx = _build_context(repo, "002501.SZ", "2024-03-31")
+    # 前两期（当期 Q1 和 FY）显式可比，仅 Q3 保持不可比
+    real_merge = merge_three_tables_semantic
+    comparable_dates = {"2024-03-31", "2023-12-31"}
+
+    def merge_fn(r, sc, rd):
+        merged, diags = real_merge(r, sc, rd)
+        if rd in comparable_dates:
+            sources = merged.get("__sources__", {})
+            for f, src in sources.items():
+                if hasattr(src, "comparable"):
+                    src.comparable = True
+        return merged, diags
+
+    with patch("fin_feature.features.engine.merge_three_tables_semantic", side_effect=merge_fn):
+        ctx = _build_context(repo, "002501.SZ", "2024-03-31")
     assert ctx is not None
 
-    # previous_sq 应为 None（previous 与 prev_prev 不可比，差分被阻断）
-    # QoQ 应为 None
+    # Q3 不可比 → previous_sq 差分被阻断 → QoQ 为 None
     feat = growth.RevenueQoQ()
     assert feat.calculate(ctx) is None
 
 
 def test_q1_qoq_comparable_chain(repo):
-    """路径 B: 全部必要输入显式可比时，300/450/180 的例子应为 0.2。
+    """路径 B: 全部必要输入显式可比时，300/450/180 的例子应为 0.2（经真实 _build_context 门禁）。
 
     Q1=180, FY去年=450, Q3去年=300 → Q4单季=150 → QoQ=(180-150)/150=0.2
-    使用受控 fixture 显式声明可比。
+    审阅建议：正例应经过引擎门禁。
     """
-    from fin_feature.features.semantic import FieldSource
+    from unittest.mock import patch
 
-    # 构造受控上下文：current_sq=180, previous_sq=150（Q4单季=450-300）
-    ctx = FeatureContext(
-        secucode="002501.SZ", report_date="2024-03-31",
-        current={"total_operate_income": 180.0},
-        previous={"total_operate_income": 450.0},
-        year_ago=None,
-        current_sq={"total_operate_income": 180.0},  # Q1 单季
-        previous_sq={"total_operate_income": 150.0},  # Q4单季 = 450-300
-        diagnostics=[],
-    )
+    # 当期 Q1
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2024-03-31",
+        "total_operate_income": 180.0, "parent_netprofit": 20.0,
+    })
+    # 上一报告期 = 2023-12-31（FY）
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2023-12-31",
+        "total_operate_income": 450.0, "parent_netprofit": 90.0,
+    })
+    # prev_prev = 2023-09-30（Q3）
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2023-09-30",
+        "total_operate_income": 300.0, "parent_netprofit": 60.0,
+    })
 
+    # 全部三期显式可比
+    real_merge = merge_three_tables_semantic
+
+    def merge_fn(r, sc, rd):
+        merged, diags = real_merge(r, sc, rd)
+        sources = merged.get("__sources__", {})
+        for f, src in sources.items():
+            if hasattr(src, "comparable"):
+                src.comparable = True
+        return merged, diags
+
+    with patch("fin_feature.features.engine.merge_three_tables_semantic", side_effect=merge_fn):
+        ctx = _build_context(repo, "002501.SZ", "2024-03-31")
+    assert ctx is not None
+
+    # 全部可比 → Q4单季=450-300=150 → QoQ=(180-150)/150=0.2
     feat = growth.RevenueQoQ()
     result = feat.calculate(ctx)
     assert result is not None
