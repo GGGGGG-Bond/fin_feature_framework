@@ -138,8 +138,9 @@ CREATE TABLE IF NOT EXISTS statement_version (
     table_type              TEXT NOT NULL,             -- financial_indicator/income_statement/balance_sheet
     notice_date             TEXT,                      -- 公告时间
     revision_notice_date    TEXT,                      -- 修订公告时间（未知为 NULL）
+    revision_type           TEXT DEFAULT 'unknown',    -- initial/revision/error_correction/unknown（P1-1 修复）
     observed_at             TEXT DEFAULT (datetime('now', 'localtime')),  -- 系统观察时间
-    content_hash            TEXT NOT NULL,             -- SHA-256（标准化字段内容）
+    content_hash            TEXT NOT NULL,             -- SHA-256（standardized_fields 内容，sort_keys+ensure_ascii=False，见 P2-2/R8）
     observation_seq         INTEGER NOT NULL,          -- 同一(secucode,report_date,table_type)内自增
     consolidate_scope       TEXT DEFAULT 'unknown',    -- consolidated/parent_only/unknown
     period_basis            TEXT DEFAULT 'unknown',    -- flow_ytd/flow_single_quarter/stock_end/unknown
@@ -221,8 +222,9 @@ CREATE INDEX IF NOT EXISTS idx_ingest_run_status ON ingest_run(status);
 - `snapshot_id=NULL`、`run_id=NULL`（不编造采集批次）
 - `observed_at` 用 crawled_at（若为 NULL 则用迁移时间）
 - `content_hash` 用标准化字段内容计算
-- `observation_seq` 按 (secucode, report_date, table_type) 分组，按 notice_date 排序自增
-- `is_superseded`：同组内仅最新（notice_date 最大）为 0，其余为 1
+- `observation_seq` 按 (secucode, report_date, table_type) 分组，按 `notice_date, crawled_at, rowid` 排序自增（P1-2 修复：notice_date 为 NULL 时回退到 crawled_at 再到 rowid，确保确定性可复现）
+- `is_superseded`：同组内仅最新（排序最大）为 0，其余为 1
+- `revision_type`：旧数据迁移统一标 `unknown`（不编造修订类型）
 - **迁移是复制不是移动**：旧 raw_* 表数据保留不删除
 - 旧 clean_*/features 数据保留不动，不强制迁移
 
@@ -241,17 +243,35 @@ CREATE INDEX IF NOT EXISTS idx_ingest_run_status ON ingest_run(status);
 - `get_latest_statement_version(secucode, report_date, table_type) -> Row | None` — 获取最新非替代版本
 - `get_statement_versions(secucode, report_date, table_type) -> list[Row]` — 获取全部版本历史
 - `supersede_old_versions(secucode, report_date, table_type, new_version_id)` — 标记旧版本为替代
+- `get_latest_versions_for_report(secucode, report_date) -> dict[str, Row]` — 获取同一 report_date 三表（FI/IS/BS）各自的最新非替代版本（O-1 修复：三表关联接口，供 2C merge 使用）
 - `get_schema_version() -> int` — 获取当前迁移版本
+
+### content_hash 计算规范（P2-2 / R8 修复）
+
+`statement_version.content_hash` 和 `raw_snapshot.content_hash` 的计算必须跨环境可复现：
+- 序列化方式：`json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(',', ':'))`
+- `content_hash` 覆盖范围：仅 `standardized_fields` JSON 内容（不含元数据字段，元数据变化不视为内容修订）
+- `raw_snapshot.content_hash` 覆盖范围：原始响应 JSON 的规范化序列化
+- 哈希算法：SHA-256
+
+### config_hash 计算规范（O-2 修复）
+
+`features.config_hash` 覆盖范围：当前生效的 YAML 配置全文（config.yaml）的 SHA-256，2C 实现时填充。离线重放时验证配置一致性。
+
+### 水位推进与批次状态关联（O-4 接口约定）
+
+2B 将修改 `update_watermark` 使其仅在 `ingest_run.status IN ('success', 'partial_failure')` 时推进水位。`status='failed'` 时不推进水位（implementation-plan.md 第 91 行）。此为 2A 到 2B 的接口约定，2A 在契约文档中声明。
 
 ---
 
 ## 后续批次概要（2B-2D，待 2A 审阅通过后展开）
 
 ### 2B 采集层改造
-- 新建 `fin_feature/crawler/raw_store.py`：RawStore 类将每页响应保存为 gzip JSON 文件，路径 `raw/eastmoney/{run_id}/{report_name}_p{page}.json.gz`，计算 SHA-256
+- 新建 `fin_feature/crawler/raw_store.py`：RawStore 类将每页响应保存为 gzip JSON 文件，路径 `raw/eastmoney/{run_id}/{report_name}_p{page}.json.gz`，计算 SHA-256（P2-6：路径规范作为契约约束写入 data-model.md）
 - eastmoney.py 新增 `fetch_all_with_raw` 返回 (记录列表, 原始页响应列表)，旧方法保持不变
 - CLI cmd_crawl/cmd_incremental 创建 ingest_run，采集后创建 raw_snapshot 和 statement_version
 - ingest_run 状态跟踪（success/partial_failure/failed）
+- 水位推进与批次状态关联（O-4：仅 status IN success/partial_failure 时推进水位）
 
 ### 2C 清洗与特征层改造
 - pipeline.py run_cleaning 增加 use_statement_version 参数，优先从 statement_version 读取最新非替代版本
@@ -333,12 +353,14 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -v -p no:cacheprovid
 
 | 风险 | 缓解 | 对应测试 |
 |---|---|---|
-| R1: JSON 字段顺序影响 content_hash | 序列化时 sort_keys=True | T2-05/T2-06 |
+| R1: JSON 字段顺序影响 content_hash | 序列化时 sort_keys=True + ensure_ascii=False + separators 紧凑模式（见 content_hash 规范） | T2-05/T2-06 |
 | R2: 旧库 crawled_at 为 NULL | observed_at 回退到迁移时间 | T2-09 |
-| R3: features 加列后旧查询行为变化 | 新列默认 NULL，不影响现有查询；definition_version 过滤逻辑不变 | 全量回归 |
+| R3: features 加列后旧查询行为变化 | 新列默认 NULL，不影响现有查询；definition_version 过滤逻辑不变；as_of_date 为阶段 4 预留，2A-2D 不填充（P2-3） | 全量回归 |
 | R4: 迁移中途失败导致不一致 | 每个迁移在独立事务中执行，失败回滚不更新版本号 | 迁移框架测试 |
-| R5: 旧 raw_* 同一 (secucode, report_date, notice_date) 有重复 | 迁移时按主键去重，observation_seq 按 notice_date 排序 | T2-09 |
+| R5: 旧 raw_* 同一 (secucode, report_date, notice_date) 有重复或 notice_date 为 NULL | 迁移时按主键去重，observation_seq 按 `notice_date, crawled_at, rowid` 排序（P1-2 修复） | T2-09 |
 | R6: schema_version 表不存在（首次迁移） | run_migrations 先检查 schema_version 表是否存在，不存在则创建 | 迁移框架测试 |
+| R7: 外键约束与迁移顺序交互 | 建表顺序必须为 schema_version → ingest_run → raw_snapshot → statement_version → reconciliation_result（外键依赖链） | 迁移框架测试 |
+| R8: content_hash 跨 Python 版本确定性 | 契约规定序列化规范 `json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(',', ':'))`，确保跨环境可复现 | T2-05/T2-06 |
 
 ---
 
@@ -368,10 +390,11 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -v -p no:cacheprovid
 2. **schema.py**：新增 5 张表 DDL + 索引 + features 加列
 3. **migrations.py**：迁移框架 + v1_baseline + v2_stage2 + verify_migration
 4. **database.py**：init_schema 改用 run_migrations
-5. **repository.py**：新增 CRUD 方法
-6. **测试**：test_migrations + test_statement_version + test_ingest_run
-7. **验证**：全量测试 + 迁移验证 + 安装验证
-8. **文档同步**：progress.md + decisions.md
+5. **v1_baseline 全量回归**（P2-4）：migrate_v1_baseline 对空库和已有库均能正确执行后，先运行全量 156 测试验证不破坏阶段 1，再进行 v2_stage2 开发
+6. **repository.py**：新增 CRUD 方法
+7. **测试**：test_migrations + test_statement_version + test_ingest_run
+8. **验证**：全量测试 + 迁移验证 + 安装验证
+9. **文档同步**：progress.md + decisions.md
 
 ---
 
