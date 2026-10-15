@@ -22,9 +22,15 @@ class NetProfitMargin(Feature):
         profit = ctx.current.get("parent_netprofit")
         revenue = ctx.current.get("total_operate_income")
         # stage1-v1: 营收（分母）必须 > 0，否则输出 None + non_positive_base
-        value, _ = self.safe_ratio(
+        value, reason = self.safe_ratio(
             profit, revenue, require_positive_denominator=True,
         )
+        if reason and ctx.diagnostics is not None:
+            ctx.diagnostics.append({
+                "field": "total_operate_income",
+                "feature": "net_profit_margin",
+                "reason_code": reason,
+            })
         return value
 
 

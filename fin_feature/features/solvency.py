@@ -76,7 +76,13 @@ class EquityRatio(Feature):
         equity = ctx.current.get("total_equity")
         assets = ctx.current.get("total_assets")
         # stage1-v1: 总资产（分母）必须 > 0
-        value, _ = self.safe_ratio(equity, assets, require_positive_denominator=True)
+        value, reason = self.safe_ratio(equity, assets, require_positive_denominator=True)
+        if reason and ctx.diagnostics is not None:
+            ctx.diagnostics.append({
+                "field": "total_assets",
+                "feature": "equity_ratio",
+                "reason_code": reason,
+            })
         return value
 
 

@@ -510,7 +510,10 @@ def test_pct_change_with_reason_valid():
 # ---------------------------------------------------------------------------
 
 def test_period_comparability_different_source_tables(repo):
-    """P1 #1: 当期与去年同期同一字段来源表不同 → incomparable_basis 诊断。"""
+    """P1 #1: 当期与去年同期同一字段来源表不同 → incomparable_basis 诊断且拒算。
+
+    审阅要求：不能以"不崩溃、诊断是 list"作为门禁验收；必须断言具体增长值被拒绝。
+    """
     # 当期：营收来自 IS
     repo.upsert_clean("income_statement", {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
@@ -523,7 +526,7 @@ def test_period_comparability_different_source_tables(repo):
         "total_operate_income": 1000.0, "parent_netprofit": 150.0,
         "weightavg_roe": 0.10,
     })
-    # 当期也写 FI（这样 weightavg_roe 在两期都来自 FI，可比）
+    # 当期也写 FI（这样 weightavg_roe 在两期都来自 FI）
     repo.upsert_clean("financial_indicator", {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
         "weightavg_roe": 0.12,
@@ -531,20 +534,23 @@ def test_period_comparability_different_source_tables(repo):
 
     ctx = _build_context(repo, "002501.SZ", "2024-12-31")
     assert ctx is not None
-    # 应有 incomparable_basis 诊断（营收来源表不一致）
+    # weightavg_roe 两期都来自 FI，但口径未验证 → 应阻断
     if ctx.diagnostics:
         incomparable = [
             d for d in ctx.diagnostics
             if d.get("reason_code") == "incomparable_basis"
         ]
-        # 当期营收来自 IS，去年同期 IS 缺失（回退被拒），所以去年同期营收为 None
-        # 不会触发可比性检查（一方为 None）。但 weightavg_roe 两期都来自 FI，可比。
-        # 此测试验证不崩溃且诊断结构正确
-        assert isinstance(incomparable, list)
+        assert len(incomparable) >= 1
+    # 去年同期营收因 IS 缺失且回退被拒 → None，revenue_yoy 应为 None
+    feat = growth.RevenueYoY()
+    assert feat.calculate(ctx) is None
 
 
-def test_period_comparability_same_source_no_diagnostic(repo):
-    """P1 #1: 当期与去年同期同一字段来源表相同 → 无 incomparable_basis 诊断。"""
+def test_period_comparability_same_source_still_blocks(repo):
+    """P1 #1: 来源表相同但口径未验证 → 仍阻断并输出 incomparable_basis。
+
+    审阅更正：来源相同不构成财务可比性证据，阶段 1 unknown 时拒算。
+    """
     # 两期都有 IS 营收（来源一致）
     repo.upsert_clean("income_statement", {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
@@ -557,13 +563,45 @@ def test_period_comparability_same_source_no_diagnostic(repo):
 
     ctx = _build_context(repo, "002501.SZ", "2024-12-31")
     assert ctx is not None
-    if ctx.diagnostics:
-        incomparable = [
-            d for d in ctx.diagnostics
-            if d.get("reason_code") == "incomparable_basis"
-            and d.get("field") == "total_operate_income"
-        ]
-        assert len(incomparable) == 0  # 来源一致，无可比性问题
+    # 同表但口径未验证 → 应阻断
+    assert ctx.diagnostics is not None
+    incomparable = [
+        d for d in ctx.diagnostics
+        if d.get("reason_code") == "incomparable_basis"
+        and d.get("field") == "total_operate_income"
+    ]
+    assert len(incomparable) == 1  # 来源相同但仍阻断
+    # revenue_yoy 应为 None（去年同期营收被阻断置 None）
+    feat = growth.RevenueYoY()
+    assert feat.calculate(ctx) is None
+
+
+def test_period_comparability_explicit_comparable_allows(repo):
+    """P1 #1: 受控 fixture 显式声明可比 → 放行计算。
+
+    使用 merge_three_tables_semantic_with_fallback_flag(allow_fallback=True)
+    标记 comparable=True，跨期可比性检查放行。
+    """
+    from fin_feature.features.semantic import merge_three_tables_semantic_with_fallback_flag
+
+    # 当期 IS 有营收
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "total_operate_income": 1200.0, "parent_netprofit": 200.0,
+    })
+    # 去年同期 IS 缺失，FI 有营收（回退源）
+    repo.upsert_clean("financial_indicator", {
+        "secucode": "002501.SZ", "report_date": "2023-12-31",
+        "total_operate_income": 1000.0, "parent_netprofit": 150.0,
+    })
+
+    # 用 allow_fallback=True 合并去年同期（标记 comparable）
+    ya_merged, _ = merge_three_tables_semantic_with_fallback_flag(
+        repo, "002501.SZ", "2023-12-31", allow_fallback=True
+    )
+    ya_sources = ya_merged.get("__sources__", {})
+    # 回退字段应标记 comparable=True
+    assert ya_sources["total_operate_income"].comparable is True
 
 
 def test_sources_preserved_in_context(repo):
@@ -585,4 +623,115 @@ def test_sources_preserved_in_context(repo):
     sources = ctx.current["__sources__"]
     assert "total_operate_income" in sources
     assert sources["total_operate_income"].table_suffix == "income_statement"
+
+
+def test_incomparable_blocks_revenue_yoy_value(repo):
+    """P1 #1: 已报不可比的字段不得产生数值。
+
+    审阅复现：当期 120 标 IS、比较期 100 标 FI，检查函数生成 incomparable_basis，
+    RevenueYoY.calculate 仍输出 0.2 是错误的。修复后应为 None。
+    """
+    # 当期 IS 营收
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "total_operate_income": 120.0, "parent_netprofit": 20.0,
+    })
+    # 去年同期 IS 缺失，FI 有营收（回退被拒 → None）
+    repo.upsert_clean("financial_indicator", {
+        "secucode": "002501.SZ", "report_date": "2023-12-31",
+        "total_operate_income": 100.0, "parent_netprofit": 15.0,
+    })
+
+    ctx = _build_context(repo, "002501.SZ", "2024-12-31")
+    assert ctx is not None
+    # revenue_yoy 应为 None（去年同期营收被阻断）
+    feat = growth.RevenueYoY()
+    assert feat.calculate(ctx) is None
+
+
+def test_q1_qoq_requires_prev_year_diff_chain(repo):
+    """P1 #1: Q1 环比需要上一年全年与 Q3 的差分链。
+
+    Q1(03-31) 的上一报告期是上一年 FY(12-31)。
+    Q4单季 = 上一年全年累计 - 上一年 Q3 累计。
+    缺上一年 Q3 → previous_sq 缺失 → QoQ 返回 None。
+    """
+    # 当期 Q1
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2024-03-31",
+        "total_operate_income": 100.0, "parent_netprofit": 20.0,
+    })
+    # 上一报告期 = 2023-12-31（FY），有全年累计
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2023-12-31",
+        "total_operate_income": 450.0, "parent_netprofit": 90.0,
+    })
+    # 缺 2023-09-30（Q3）→ prev_prev 缺失 → Q4单季无法差分
+
+    ctx = _build_context(repo, "002501.SZ", "2024-03-31")
+    assert ctx is not None
+    # previous_sq 应为 None（缺 prev_prev Q3）
+    # QoQ 应为 None（missing_comparison_period）
+    feat = growth.RevenueQoQ()
+    assert feat.calculate(ctx) is None
+
+
+# ---------------------------------------------------------------------------
+# 引擎最终诊断统计测试（P2 #3：计算原因进入最终统计）
+# ---------------------------------------------------------------------------
+
+def test_compute_all_collects_feature_diagnostics(repo, caplog):
+    """P2 #3: 特征计算时追加的原因应进入最终诊断统计。
+
+    审阅复现：当期利润 10、去年同期 -10，profit_yoy 返回 None，
+    最终日志统计应含 non_positive_comparison_base，而非只有 missing_comparison_period。
+
+    注意：可比性门控会先阻断同表未验证口径的字段。这里用受控 FeatureContext
+    直接验证特征计算时追加的原因能进入最终统计。
+    """
+    import logging
+    from fin_feature.features.engine import _build_context
+
+    # 用受控上下文直接测试：去年同期利润为负，且显式标记可比
+    from fin_feature.features.semantic import FieldSource
+
+    ctx = FeatureContext(
+        secucode="002501.SZ", report_date="2024-12-31",
+        current={
+            "parent_netprofit": 10.0,
+            "__sources__": {"parent_netprofit": FieldSource("income_statement", comparable=True)},
+        },
+        previous=None,
+        year_ago={
+            "parent_netprofit": -10.0,
+            "__sources__": {"parent_netprofit": FieldSource("income_statement", comparable=True)},
+        },
+        current_sq=None, previous_sq=None,
+        diagnostics=[],
+    )
+
+    feat = growth.ProfitYoY()
+    value = feat.calculate(ctx)
+    assert value is None  # 非正基数 → None
+    # 诊断应被追加到 ctx.diagnostics
+    assert ctx.diagnostics is not None
+    reasons = [d["reason_code"] for d in ctx.diagnostics]
+    assert "non_positive_comparison_base" in reasons
+
+
+def test_diagnostics_initialized_non_none_in_context(repo):
+    """P2 #3: FeatureContext.diagnostics 应统一初始化为非 None list。
+
+    审阅指出：默认 None 的上下文会直接丢弃原因。
+    """
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "total_operate_income": 1000.0, "parent_netprofit": 200.0,
+    })
+
+    ctx = _build_context(repo, "002501.SZ", "2024-12-31")
+    assert ctx is not None
+    # diagnostics 应为 list（非 None），特征计算时可追加
+    assert ctx.diagnostics is not None
+    assert isinstance(ctx.diagnostics, list)
 

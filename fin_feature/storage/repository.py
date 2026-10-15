@@ -127,13 +127,16 @@ class Repository:
             )
 
     def invalidate_features(self, secucode: str, report_date: str) -> None:
-        """失效某公司某报告期的全部特征记录。
+        """失效某公司某报告期的特征记录。
 
-        stage1-v1: 输入被 drop 时失效依赖特征，避免陈旧特征参与分析。
+        stage1-v1: 仅失效当前定义版本（stage1-v1），保留 legacy 和其他版本。
+        不能由 clean 的删除路径绕过写入端的 legacy 拒覆盖保护。
         """
         with self.conn:
             self.conn.execute(
-                "DELETE FROM features WHERE secucode = ? AND report_date = ?",
+                "DELETE FROM features "
+                "WHERE secucode = ? AND report_date = ? "
+                "AND definition_version = 'stage1-v1'",
                 (secucode, report_date),
             )
 

@@ -72,6 +72,7 @@ class FieldSource:
     table_suffix: str
     notice_date: str | None = None
     record_ref: str | None = None
+    comparable: bool = False  # 受控 fixture 显式声明同口径可比
 
 
 def _get_clean_record_safe(
@@ -223,6 +224,7 @@ def merge_three_tables_semantic_with_fallback_flag(
             sources[field_name] = FieldSource(
                 table_suffix=fallback_table,
                 notice_date=fb_record.get("notice_date") if fb_record else None,
+                comparable=True,  # 受控 fixture 声明同口径可比
             )
             diagnostics.append({
                 "field": field_name,

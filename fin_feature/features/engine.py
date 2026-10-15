@@ -76,12 +76,14 @@ def _check_period_comparability(
     comparison: dict | None,
     comparison_label: str,
 ) -> list[dict]:
-    """检查两个报告期之间字段级可比性。
+    """检查两个报告期之间字段级可比性，阻断不可比字段的跨期计算。
 
-    stage1-v1: 对计算实际依赖的字段检查周期类型、合并范围、修订基准可比性。
-    阶段 1 currency/scope 标 unknown，不臆造；当来源表不同且无可比证据时
-    输出 incomparable_basis 诊断。
-    返回诊断列表（空表示无可比性问题或无可比较字段）。
+    stage1-v1: 来源表名相同不构成财务可比性证据。阶段 1 currency/scope/计量/
+    合并范围/修订基准均标 unknown，不臆造。对两期都有有效值的字段：
+    - 来源表不同 → 可比性未知 → 将比较期该字段置 None（阻断计算）+ incomparable_basis
+    - 来源表相同但无显式可比声明 → 可比性仍未知 → 同样阻断
+    受控 fixture 可通过 FieldSource.comparable=True 显式声明同口径，放行计算。
+    返回诊断列表。就地修改 comparison 字典以阻断不可比字段。
     """
     if current is None or comparison is None:
         return []
@@ -90,7 +92,6 @@ def _check_period_comparability(
     cur_sources = current.get("__sources__", {})
     cmp_sources = comparison.get("__sources__", {})
 
-    # 对两期都有有效值的字段检查来源一致性
     for field in _STANDARDIZE_FIELDS:
         cur_val = current.get(field)
         cmp_val = comparison.get(field)
@@ -100,17 +101,41 @@ def _check_period_comparability(
         cur_src = cur_sources.get(field)
         cmp_src = cmp_sources.get(field)
         if cur_src is None or cmp_src is None:
+            # 缺来源证据 → 可比性未知 → 阻断
+            comparison[field] = None
+            diags.append({
+                "field": field,
+                "reason_code": "incomparable_basis",
+                "detail": f"{comparison_label}: {field} 缺少来源证据，可比性未知，拒算",
+            })
             continue
 
-        # 来源表不同 → 可比性未知（阶段 1 不声称跨表可比）
+        # 受控 fixture 显式声明可比 → 放行
+        if getattr(cur_src, "comparable", False) and getattr(cmp_src, "comparable", False):
+            continue
+
+        # 来源表不同 → 可比性未知 → 阻断
+        # 来源表相同但无显式可比声明 → 阶段 1 仍标 unknown → 阻断
         if cur_src.table_suffix != cmp_src.table_suffix:
+            comparison[field] = None
             diags.append({
                 "field": field,
                 "reason_code": "incomparable_basis",
                 "detail": (
                     f"{comparison_label}: {field} 来源表不一致 "
                     f"(当期={cur_src.table_suffix}, {comparison_label}={cmp_src.table_suffix})，"
-                    f"可比性未知"
+                    f"可比性未知，拒算"
+                ),
+            })
+        else:
+            # 同表但未显式声明可比 → 阶段 1 unknown → 阻断
+            comparison[field] = None
+            diags.append({
+                "field": field,
+                "reason_code": "incomparable_basis",
+                "detail": (
+                    f"{comparison_label}: {field} 来源表相同({cur_src.table_suffix}) "
+                    f"但口径未验证，可比性未知，拒算"
                 ),
             })
 
@@ -311,7 +336,8 @@ def _build_context(
         year_ago=year_ago,
         current_sq=current_sq,
         previous_sq=previous_sq,
-        diagnostics=all_diags if all_diags else None,
+        # P2 #3: 统一初始化为非 None list，特征计算时可追加原因
+        diagnostics=all_diags,
     )
 
 
@@ -361,11 +387,9 @@ def compute_all(repo: Repository, groups: list[str] | None = None) -> int:
         if ctx is None:
             continue
 
-        # 收集诊断原因计数
-        if ctx.diagnostics:
-            for d in ctx.diagnostics:
-                reason = d.get("reason_code", "unknown")
-                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        # P2 #3: 确保诊断容器非 None，特征计算时可追加原因
+        if ctx.diagnostics is None:
+            ctx.diagnostics = []
 
         for feature in features:
             try:
@@ -387,6 +411,11 @@ def compute_all(repo: Repository, groups: list[str] | None = None) -> int:
                 }
             )
             total += 1
+
+        # P2 #3: 特征计算后汇总诊断（含计算时追加的原因）
+        for d in ctx.diagnostics:
+            reason = d.get("reason_code", "unknown")
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
 
     # 批量写入
     written = repo.batch_upsert_features(feature_records)

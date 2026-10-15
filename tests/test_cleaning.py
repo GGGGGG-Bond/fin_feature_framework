@@ -223,3 +223,70 @@ def test_drop_invalidates_old_clean_and_features(repo):
     logs = repo.get_clean_logs()
     invalidation_logs = [l for l in logs if l["action"] == "invalidated_on_drop"]
     assert len(invalidation_logs) >= 1
+
+
+def test_drop_invalidates_only_stage1_features_preserves_legacy(repo):
+    """P1 #2: drop 失效只删除 stage1-v1 特征，保留 legacy 和其他版本。
+
+    审阅复现：同公司/报告期下混有 NULL、stage1-v1、其他版本特征，
+    确认只影响允许失效的集合（stage1-v1），不绕过 legacy 拒覆盖保护。
+    """
+    # 1. 写入旧 clean 记录
+    repo.upsert_clean("financial_indicator", {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "total_operate_income": 1000.0, "parent_netprofit": 200.0,
+        "weightavg_roe": 0.15,
+    })
+
+    # 2. 同公司/报告期写入三种版本的特征
+    # legacy（NULL）
+    repo.conn.execute(
+        "INSERT INTO features (secucode, report_date, feature_name, feature_value, "
+        "feature_group, definition_version) VALUES (?, ?, ?, ?, ?, NULL)",
+        ("002501.SZ", "2024-12-31", "legacy_feat", 0.5, "profitability"),
+    )
+    # stage1-v1
+    repo.upsert_feature("002501.SZ", "2024-12-31", "stage1_feat", 2.0, "profitability")
+    # 其他版本 v2
+    repo.conn.execute(
+        "INSERT INTO features (secucode, report_date, feature_name, feature_value, "
+        "feature_group, definition_version) VALUES (?, ?, ?, ?, ?, ?)",
+        ("002501.SZ", "2024-12-31", "v2_feat", 3.0, "profitability", "stage2-v2"),
+    )
+    repo.conn.commit()
+
+    # 确认三种版本都存在
+    rows = repo.conn.execute(
+        "SELECT feature_name, definition_version FROM features "
+        "WHERE secucode = ? AND report_date = ?",
+        ("002501.SZ", "2024-12-31"),
+    ).fetchall()
+    assert len(rows) == 3
+
+    # 3. 新原始数据核心字段缺失 → drop
+    raw_records = [
+        _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                  "notice_date": "2025-05-01",
+                  "total_operate_income": None,  # 核心字段缺失
+                  "parent_netprofit": 200.0}),
+    ]
+    clean_table(repo, "financial_indicator", raw_records)
+
+    # 4. stage1-v1 特征应被失效（删除）
+    stage1_rows = repo.conn.execute(
+        "SELECT feature_name FROM features "
+        "WHERE secucode = ? AND report_date = ? AND definition_version = 'stage1-v1'",
+        ("002501.SZ", "2024-12-31"),
+    ).fetchall()
+    assert len(stage1_rows) == 0  # stage1-v1 已删除
+
+    # 5. legacy 和其他版本应保留
+    remaining = repo.conn.execute(
+        "SELECT feature_name, definition_version FROM features "
+        "WHERE secucode = ? AND report_date = ?",
+        ("002501.SZ", "2024-12-31"),
+    ).fetchall()
+    remaining_names = {r[0] for r in remaining}
+    assert "legacy_feat" in remaining_names  # legacy 保留
+    assert "v2_feat" in remaining_names  # 其他版本保留
+    assert "stage1_feat" not in remaining_names  # stage1-v1 已删除
