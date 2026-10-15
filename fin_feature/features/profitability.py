@@ -43,6 +43,16 @@ class GrossMarginFeature(Feature):
     description = "销售毛利率（小数，来自主要财务指标接口，经标准化）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
+        # T16: 金融企业不套用工业企业毛利率定义，返回 None + not_applicable
+        if ctx.industry_type == "financial":
+            if ctx.diagnostics is not None:
+                ctx.diagnostics.append({
+                    "field": "gross_margin",
+                    "feature": "gross_margin_feat",
+                    "reason_code": "not_applicable",
+                    "detail": "金融企业不适用工业企业毛利率定义",
+                })
+            return None
         return ctx.current.get("gross_margin")
 
 

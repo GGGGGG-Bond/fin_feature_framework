@@ -290,3 +290,169 @@ def test_drop_invalidates_only_stage1_features_preserves_legacy(repo):
     assert "legacy_feat" in remaining_names  # legacy 保留
     assert "v2_feat" in remaining_names  # 其他版本保留
     assert "stage1_feat" not in remaining_names  # stage1-v1 已删除
+
+
+# ---------------------------------------------------------------------------
+# T14: 非法清洗配置写库前拒绝
+# ---------------------------------------------------------------------------
+
+class TestConfigValidation:
+    """T14: 非法策略、倒置阈值、非有限数在写库前拒绝。"""
+
+    def test_invalid_strategy_rejected(self, repo):
+        """非法策略 bogus → 写库前报 ValueError，不部分应用。"""
+        from fin_feature.cleaning.rules import load_rules_config
+        import pytest
+
+        with pytest.raises(ValueError, match="非法策略"):
+            load_rules_config({
+                "missing_strategy": {"parent_netprofit": "bogus"},
+            })
+
+    def test_inverted_threshold_rejected(self, repo):
+        """倒置阈值 [1, -1] → 写库前报 ValueError。"""
+        from fin_feature.cleaning.rules import load_rules_config
+        import pytest
+
+        with pytest.raises(ValueError, match="倒置"):
+            load_rules_config({
+                "outlier_thresholds": {"gross_margin": [1.0, -1.0]},
+            })
+
+    def test_non_finite_threshold_rejected(self, repo):
+        """非有限数 NaN → 写库前报 ValueError。"""
+        from fin_feature.cleaning.rules import load_rules_config
+        import pytest
+
+        with pytest.raises(ValueError, match="非有限数"):
+            load_rules_config({
+                "outlier_thresholds": {"gross_margin": [float("nan"), 1.0]},
+            })
+
+    def test_valid_config_applied(self, repo):
+        """合法配置正常应用，不报错。"""
+        from fin_feature.cleaning.rules import load_rules_config, get_outlier_threshold
+
+        load_rules_config({
+            "outlier_thresholds": {"gross_margin": [-0.5, 0.5]},
+            "missing_strategy": {"bps": "zero"},
+        })
+        assert get_outlier_threshold("gross_margin") == (-0.5, 0.5)
+
+    def test_invalid_config_does_not_partially_apply(self, repo):
+        """T14: 非法配置不部分应用——校验失败时规则不变。"""
+        from fin_feature.cleaning.rules import load_rules_config, get_outlier_threshold
+        import pytest
+
+        original = get_outlier_threshold("gross_margin")
+        with pytest.raises(ValueError):
+            load_rules_config({
+                "outlier_thresholds": {
+                    "gross_margin": [-0.5, 0.5],  # 合法
+                    "weightavg_roe": [2.0, -2.0],  # 倒置，非法
+                },
+            })
+        # 校验失败，规则不变（不部分应用）
+        assert get_outlier_threshold("gross_margin") == original
+
+    def test_config_from_immutable_defaults(self, repo):
+        """T14: 本批规则从不可变默认值副本构造，不污染后续批次。"""
+        from fin_feature.cleaning.rules import load_rules_config, get_outlier_threshold
+
+        # 第一批：修改 gross_margin 阈值
+        load_rules_config({
+            "outlier_thresholds": {"gross_margin": [-0.5, 0.5]},
+        })
+        assert get_outlier_threshold("gross_margin") == (-0.5, 0.5)
+
+        # 第二批：不传 gross_margin，应恢复默认值（不继承上一批的修改）
+        load_rules_config({
+            "missing_strategy": {"bps": "zero"},
+        })
+        assert get_outlier_threshold("gross_margin") == (-1.0, 1.0)  # 默认值
+
+
+# ---------------------------------------------------------------------------
+# T31: 同日版本选择不依赖输入顺序
+# ---------------------------------------------------------------------------
+
+class TestSameDayDedup:
+    """T31: 同日版本选择使用 entry_time，仍相同时按内容摘要排序并标歧义。"""
+
+    def test_same_day_uses_entry_time(self, repo):
+        """同公告日，entry_time 不同 → 按 entry_time 选取最新。"""
+        raw_records = [
+            _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                      "notice_date": "2025-04-29", "entry_time": "2025-04-29 09:00:00",
+                      "total_operate_income": 100.0}),
+            _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                      "notice_date": "2025-04-29", "entry_time": "2025-04-29 12:00:00",
+                      "total_operate_income": 120.0}),
+        ]
+        result = deduplicate(repo, "financial_indicator", raw_records)
+        assert len(result) == 1
+        # entry_time 12:00 更新，应选 120
+        assert result[0]["total_operate_income"] == 120.0
+
+    def test_same_day_same_entry_time_order_independent(self, repo):
+        """同日同 entry_time → 按内容摘要选取，不依赖输入顺序。"""
+        record_a = _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                             "notice_date": "2025-04-29", "entry_time": "2025-04-29 12:00:00",
+                             "total_operate_income": 100.0})
+        record_b = _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                             "notice_date": "2025-04-29", "entry_time": "2025-04-29 12:00:00",
+                             "total_operate_income": 120.0})
+
+        # 正序
+        result_forward = deduplicate(repo, "financial_indicator", [record_a, record_b])
+        # 反序
+        result_reverse = deduplicate(repo, "financial_indicator", [record_b, record_a])
+
+        # 两种输入顺序结果一致（不依赖输入顺序）
+        assert result_forward[0]["total_operate_income"] == result_reverse[0]["total_operate_income"]
+
+    def test_same_day_no_entry_time_order_independent(self, repo):
+        """同日无 entry_time → 按内容摘要选取，不依赖输入顺序。"""
+        record_a = _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                             "notice_date": "2025-04-29", "entry_time": None,
+                             "total_operate_income": 100.0})
+        record_b = _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                             "notice_date": "2025-04-29", "entry_time": None,
+                             "total_operate_income": 120.0})
+
+        result_forward = deduplicate(repo, "financial_indicator", [record_a, record_b])
+        result_reverse = deduplicate(repo, "financial_indicator", [record_b, record_a])
+
+        assert result_forward[0]["total_operate_income"] == result_reverse[0]["total_operate_income"]
+
+    def test_same_day_ambiguous_logged(self, repo):
+        """同日同 entry_time → 标歧义日志。"""
+        raw_records = [
+            _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                      "notice_date": "2025-04-29", "entry_time": "2025-04-29 12:00:00",
+                      "total_operate_income": 100.0}),
+            _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                      "notice_date": "2025-04-29", "entry_time": "2025-04-29 12:00:00",
+                      "total_operate_income": 120.0}),
+        ]
+        deduplicate(repo, "financial_indicator", raw_records)
+        logs = repo.get_clean_logs()
+        ambiguous_logs = [l for l in logs if l["action"] == "dedup_ambiguous"]
+        assert len(ambiguous_logs) >= 1
+
+    def test_different_notice_date_normal_replace(self, repo):
+        """不同公告日 → 正常修订替换，不标歧义。"""
+        raw_records = [
+            _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                      "notice_date": "2025-04-29", "entry_time": "2025-04-29 09:00:00",
+                      "total_operate_income": 100.0}),
+            _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                      "notice_date": "2025-04-30", "entry_time": "2025-04-30 09:00:00",
+                      "total_operate_income": 120.0}),
+        ]
+        result = deduplicate(repo, "financial_indicator", raw_records)
+        assert len(result) == 1
+        assert result[0]["total_operate_income"] == 120.0  # notice_date 更新
+        logs = repo.get_clean_logs()
+        replace_logs = [l for l in logs if l["action"] == "dedup_replace"]
+        assert len(replace_logs) >= 1

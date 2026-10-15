@@ -933,3 +933,117 @@ def test_q1_qoq_comparable_chain(repo):
     assert result is not None
     assert abs(result - 0.2) < 1e-9
 
+
+# ---------------------------------------------------------------------------
+# T16: 金融行业不适用门禁
+# ---------------------------------------------------------------------------
+
+def test_gross_margin_financial_industry_not_applicable():
+    """T16: 金融企业毛利率返回 None + not_applicable。"""
+    from fin_feature.features.profitability import GrossMarginFeature
+
+    ctx = FeatureContext(
+        secucode="601398.SH", report_date="2024-12-31",
+        current={"gross_margin": 0.3}, previous=None, year_ago=None,
+        diagnostics=[], industry_type="financial",
+    )
+    feat = GrossMarginFeature()
+    result = feat.calculate(ctx)
+    assert result is None
+    # 诊断含 not_applicable
+    diag = [d for d in ctx.diagnostics if d.get("reason_code") == "not_applicable"]
+    assert len(diag) >= 1
+
+
+def test_gross_margin_industrial_industry_calculates():
+    """T16: 工业企业毛利率正常计算。"""
+    from fin_feature.features.profitability import GrossMarginFeature
+
+    ctx = FeatureContext(
+        secucode="002501.SZ", report_date="2024-12-31",
+        current={"gross_margin": 0.3}, previous=None, year_ago=None,
+        diagnostics=[], industry_type="industrial",
+    )
+    feat = GrossMarginFeature()
+    result = feat.calculate(ctx)
+    assert result == 0.3
+    # 无 not_applicable 诊断
+    diag = [d for d in ctx.diagnostics if d.get("reason_code") == "not_applicable"]
+    assert len(diag) == 0
+
+
+def test_gross_margin_unknown_industry_calculates():
+    """T16: 行业未知时正常计算（不靠名称或数值猜测）。"""
+    from fin_feature.features.profitability import GrossMarginFeature
+
+    ctx = FeatureContext(
+        secucode="002501.SZ", report_date="2024-12-31",
+        current={"gross_margin": 0.3}, previous=None, year_ago=None,
+        diagnostics=[], industry_type="unknown",
+    )
+    feat = GrossMarginFeature()
+    result = feat.calculate(ctx)
+    assert result == 0.3
+
+
+def test_current_ratio_change_financial_industry_not_applicable():
+    """T16: 金融企业流动比率变化返回 None + not_applicable，不视为普通缺失。"""
+    from fin_feature.features.solvency import CurrentRatioChange
+
+    ctx = FeatureContext(
+        secucode="601398.SH", report_date="2024-12-31",
+        current={"current_ratio": 2.5}, previous={"current_ratio": 2.0}, year_ago=None,
+        diagnostics=[], industry_type="financial",
+    )
+    feat = CurrentRatioChange()
+    result = feat.calculate(ctx)
+    assert result is None
+    diag = [d for d in ctx.diagnostics if d.get("reason_code") == "not_applicable"]
+    assert len(diag) >= 1
+
+
+def test_current_ratio_change_unknown_unit_vs_financial_distinguished():
+    """T16: 流动比率 unknown_unit 与金融行业 not_applicable 可区分。"""
+    from fin_feature.features.solvency import CurrentRatioChange
+
+    # 金融行业：即使有值也返回 not_applicable
+    ctx_fin = FeatureContext(
+        secucode="601398.SH", report_date="2024-12-31",
+        current={"current_ratio": 2.5}, previous={"current_ratio": 2.0}, year_ago=None,
+        diagnostics=[], industry_type="financial",
+    )
+    feat = CurrentRatioChange()
+    assert feat.calculate(ctx_fin) is None
+    assert any(d.get("reason_code") == "not_applicable" for d in ctx_fin.diagnostics)
+
+    # 工业企业但单位未知（current_ratio 为 None）：返回 None 但无 not_applicable
+    ctx_ind = FeatureContext(
+        secucode="002501.SZ", report_date="2024-12-31",
+        current={"current_ratio": None}, previous={"current_ratio": 2.0}, year_ago=None,
+        diagnostics=[], industry_type="industrial",
+    )
+    assert feat.calculate(ctx_ind) is None
+    assert not any(d.get("reason_code") == "not_applicable" for d in ctx_ind.diagnostics)
+
+
+def test_industry_type_resolved_from_industry_name(repo):
+    """T16: 引擎从 industry_name 解析 industry_type 并贯穿到上下文。"""
+    repo.upsert_clean("income_statement", {
+        "secucode": "601398.SH", "report_date": "2024-12-31",
+        "industry_name": "银行", "total_operate_income": 1000.0,
+        "parent_netprofit": 200.0,
+    })
+    ctx = _build_context(repo, "601398.SH", "2024-12-31")
+    assert ctx is not None
+    assert ctx.industry_type == "financial"
+
+    # 工业企业
+    repo.upsert_clean("income_statement", {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "industry_name": "制造业", "total_operate_income": 1000.0,
+        "parent_netprofit": 200.0,
+    })
+    ctx2 = _build_context(repo, "002501.SZ", "2024-12-31")
+    assert ctx2 is not None
+    assert ctx2.industry_type == "industrial"
+
