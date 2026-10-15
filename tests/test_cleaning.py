@@ -185,3 +185,41 @@ def test_clean_table_pipeline(repo):
     row = repo.get_clean_record("financial_indicator", "002501.SZ", "2024-12-31")
     assert row is not None
     assert row["total_operate_income"] == 1100.0  # 保留修订版
+
+
+def test_drop_invalidates_old_clean_and_features(repo):
+    """P1 #4: 最新输入被 drop 后旧 clean 和特征应被失效。
+
+    场景：已有旧 clean 记录和特征，新原始数据核心字段缺失被 drop，
+    旧 clean 和特征应被删除，避免陈旧值残留。
+    """
+    # 1. 先写入旧 clean 记录和特征
+    repo.upsert_clean("financial_indicator", {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "total_operate_income": 1000.0, "parent_netprofit": 200.0,
+        "weightavg_roe": 0.15,
+    })
+    repo.upsert_feature("002501.SZ", "2024-12-31", "roe_change", 2.0, "profitability")
+
+    # 确认旧数据存在
+    assert repo.get_clean_record("financial_indicator", "002501.SZ", "2024-12-31") is not None
+    assert len(repo.get_features("002501.SZ", "2024-12-31")) >= 1
+
+    # 2. 新原始数据核心字段缺失 → 被 drop
+    raw_records = [
+        _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                  "notice_date": "2025-05-01",
+                  "total_operate_income": None,  # 核心字段缺失
+                  "parent_netprofit": 200.0}),
+    ]
+    stats = clean_table(repo, "financial_indicator", raw_records)
+    assert stats.dropped_count == 1
+
+    # 3. 旧 clean 和特征应被失效（删除）
+    assert repo.get_clean_record("financial_indicator", "002501.SZ", "2024-12-31") is None
+    assert len(repo.get_features("002501.SZ", "2024-12-31")) == 0
+
+    # 4. clean_log 应有失效记录
+    logs = repo.get_clean_logs()
+    invalidation_logs = [l for l in logs if l["action"] == "invalidated_on_drop"]
+    assert len(invalidation_logs) >= 1

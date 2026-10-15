@@ -197,9 +197,14 @@ def cmd_incremental(args) -> None:
         logger.error("配置错误: %s", exc)
         db.close()
         return 1
+    failed_units = stats.pop("__failed_units__", 0)
     for report_name, count in stats.items():
         logger.info("%s: 新增 %d 条", report_name, count)
     db.close()
+    # stage1-v1: 发生任一采集失败时非零退出
+    if failed_units:
+        logger.error("增量爬取完成，但 %d 个单元失败", failed_units)
+        return 1
     return 0
 
 

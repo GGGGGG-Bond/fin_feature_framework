@@ -58,27 +58,83 @@ def _standardize_merged(merged: dict) -> tuple[dict, list[dict]]:
     """对语义合并后的记录做标准化。
 
     返回 (标准化值字典, 诊断列表)。
-    去除 __sources__ 等元信息键。
+    保留 __sources__ 字段级来源元信息，供跨周期可比性检查使用。
     """
     std_values, diags = standardize_record(merged, _STANDARDIZE_FIELDS)
     # 保留标识字段（不标准化）
     for ident in ["secucode", "report_date", "security_code", "security_name", "industry_name"]:
         if ident in merged:
             std_values[ident] = merged[ident]
+    # 保留字段级来源元信息（P1 #1：语义证据贯穿上下文）
+    if "__sources__" in merged:
+        std_values["__sources__"] = merged["__sources__"]
     return (std_values, diags)
+
+
+def _check_period_comparability(
+    current: dict | None,
+    comparison: dict | None,
+    comparison_label: str,
+) -> list[dict]:
+    """检查两个报告期之间字段级可比性。
+
+    stage1-v1: 对计算实际依赖的字段检查周期类型、合并范围、修订基准可比性。
+    阶段 1 currency/scope 标 unknown，不臆造；当来源表不同且无可比证据时
+    输出 incomparable_basis 诊断。
+    返回诊断列表（空表示无可比性问题或无可比较字段）。
+    """
+    if current is None or comparison is None:
+        return []
+
+    diags: list[dict] = []
+    cur_sources = current.get("__sources__", {})
+    cmp_sources = comparison.get("__sources__", {})
+
+    # 对两期都有有效值的字段检查来源一致性
+    for field in _STANDARDIZE_FIELDS:
+        cur_val = current.get(field)
+        cmp_val = comparison.get(field)
+        if cur_val is None or cmp_val is None:
+            continue
+
+        cur_src = cur_sources.get(field)
+        cmp_src = cmp_sources.get(field)
+        if cur_src is None or cmp_src is None:
+            continue
+
+        # 来源表不同 → 可比性未知（阶段 1 不声称跨表可比）
+        if cur_src.table_suffix != cmp_src.table_suffix:
+            diags.append({
+                "field": field,
+                "reason_code": "incomparable_basis",
+                "detail": (
+                    f"{comparison_label}: {field} 来源表不一致 "
+                    f"(当期={cur_src.table_suffix}, {comparison_label}={cmp_src.table_suffix})，"
+                    f"可比性未知"
+                ),
+            })
+
+    return diags
 
 
 def _compute_self_calculated_ratios(std_values: dict) -> dict:
     """预算自算比率字段，覆盖原 API 值。
 
     debt_asset_ratio = total_liabilities / total_assets（小数）
+    stage1-v1: 资产必须 > 0，负债必须 >= 0；否则输出 None（非法负资产/负负债）。
     """
     liabilities = std_values.get("total_liabilities")
     assets = std_values.get("total_assets")
-    if liabilities is not None and assets is not None and assets != 0:
-        std_values["debt_asset_ratio"] = liabilities / assets
-    else:
+    if liabilities is None or assets is None:
         std_values["debt_asset_ratio"] = None
+    elif assets <= 0:
+        # 非法负资产或零资产
+        std_values["debt_asset_ratio"] = None
+    elif liabilities < 0:
+        # 非法负负债
+        std_values["debt_asset_ratio"] = None
+    else:
+        std_values["debt_asset_ratio"] = liabilities / assets
     return std_values
 
 
@@ -200,6 +256,8 @@ def _build_context(
             previous = _compute_self_calculated_ratios(previous)
             all_diags.extend(prev_merge_diags)
             all_diags.extend(prev_std_diags)
+            # P1 #1: 跨周期可比性检查（环比基准）
+            all_diags.extend(_check_period_comparability(current, previous, "上一报告期"))
 
     # 4. 查找去年同期（同比基准）
     ya_date = year_ago_report_date(report_date)
@@ -211,6 +269,8 @@ def _build_context(
             year_ago = _compute_self_calculated_ratios(year_ago)
             all_diags.extend(ya_merge_diags)
             all_diags.extend(ya_std_diags)
+            # P1 #1: 跨周期可比性检查（同比基准）
+            all_diags.extend(_check_period_comparability(current, year_ago, "去年同期"))
 
     # 5. 计算当期单季值
     current_sq, sq_reason = _compute_single_quarter(

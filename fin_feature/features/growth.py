@@ -25,7 +25,14 @@ class RevenueYoY(Feature):
             return None
         current = ctx.current.get("total_operate_income")
         year_ago = ctx.year_ago.get("total_operate_income")
-        return self.pct_change(current, year_ago)
+        value, reason = self.pct_change_with_reason(current, year_ago)
+        if reason and ctx.diagnostics is not None:
+            ctx.diagnostics.append({
+                "field": "total_operate_income",
+                "feature": "revenue_yoy",
+                "reason_code": reason,
+            })
+        return value
 
 
 @FeatureRegistry.register
@@ -45,7 +52,14 @@ class RevenueQoQ(Feature):
             return None
         current = ctx.current_sq.get("total_operate_income")
         previous = ctx.previous_sq.get("total_operate_income")
-        return self.pct_change(current, previous)
+        value, reason = self.pct_change_with_reason(current, previous)
+        if reason and ctx.diagnostics is not None:
+            ctx.diagnostics.append({
+                "field": "total_operate_income",
+                "feature": "revenue_qoq",
+                "reason_code": reason,
+            })
+        return value
 
 
 @FeatureRegistry.register
@@ -61,7 +75,14 @@ class ProfitYoY(Feature):
             return None
         current = ctx.current.get("parent_netprofit")
         year_ago = ctx.year_ago.get("parent_netprofit")
-        return self.pct_change(current, year_ago)
+        value, reason = self.pct_change_with_reason(current, year_ago)
+        if reason and ctx.diagnostics is not None:
+            ctx.diagnostics.append({
+                "field": "parent_netprofit",
+                "feature": "profit_yoy",
+                "reason_code": reason,
+            })
+        return value
 
 
 @FeatureRegistry.register
@@ -81,4 +102,11 @@ class ProfitQoQ(Feature):
             return None
         current = ctx.current_sq.get("parent_netprofit")
         previous = ctx.previous_sq.get("parent_netprofit")
-        return self.pct_change(current, previous)
+        value, reason = self.pct_change_with_reason(current, previous)
+        if reason and ctx.diagnostics is not None:
+            ctx.diagnostics.append({
+                "field": "parent_netprofit",
+                "feature": "profit_qoq",
+                "reason_code": reason,
+            })
+        return value

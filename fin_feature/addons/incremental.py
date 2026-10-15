@@ -86,6 +86,7 @@ def crawl_incremental(
     返回 {report_name: 新增记录数}。
 
     stage1-v1: 采集成功单元 = (报表 + 公司)；单元内失败不提交 raw、不推进水位。
+    发生任一采集失败时，返回统计中含 "__failed_units__" 计数，CLI 据此非零退出。
     """
     # 请求前校验 N
     recent_periods = validate_recent_periods(recent_periods)
@@ -94,6 +95,7 @@ def crawl_incremental(
         report_names = list(REPORT_TO_SUFFIX.keys())
 
     stats: dict[str, int] = {}
+    failed_units = 0
 
     for report_name in report_names:
         table_suffix = REPORT_TO_SUFFIX[report_name]
@@ -119,6 +121,7 @@ def crawl_incremental(
                 )
             except Exception as exc:
                 logger.error("增量爬取 %s %s 失败（单元失败，不提交）：%s", secucode, report_name, exc)
+                failed_units += 1
                 continue
 
             if not records:
@@ -142,5 +145,10 @@ def crawl_incremental(
 
         stats[report_name] = new_count
         logger.info("增量爬取 %s: 新增 %d 条", report_name, new_count)
+
+    # 失败单元汇总：CLI 据此非零退出
+    if failed_units:
+        stats["__failed_units__"] = failed_units
+        logger.error("增量爬取完成，但 %d 个单元失败", failed_units)
 
     return stats

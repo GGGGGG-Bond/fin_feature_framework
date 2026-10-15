@@ -112,6 +112,31 @@ class Repository:
         with self.conn:
             self.conn.execute(sql, filtered)
 
+    def invalidate_clean(
+        self, table_suffix: str, secucode: str, report_date: str
+    ) -> None:
+        """失效某公司某报告期的清洗记录。
+
+        stage1-v1: 最新输入被 drop 时，同步失效旧 clean 数据，避免陈旧值残留。
+        """
+        table = CLEAN_TABLES[table_suffix]
+        with self.conn:
+            self.conn.execute(
+                f"DELETE FROM {table} WHERE secucode = ? AND report_date = ?",
+                (secucode, report_date),
+            )
+
+    def invalidate_features(self, secucode: str, report_date: str) -> None:
+        """失效某公司某报告期的全部特征记录。
+
+        stage1-v1: 输入被 drop 时失效依赖特征，避免陈旧特征参与分析。
+        """
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM features WHERE secucode = ? AND report_date = ?",
+                (secucode, report_date),
+            )
+
     def get_clean_by_company(
         self, table_suffix: str, secucode: str
     ) -> list[sqlite3.Row]:

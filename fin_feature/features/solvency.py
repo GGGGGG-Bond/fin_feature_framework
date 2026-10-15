@@ -75,7 +75,9 @@ class EquityRatio(Feature):
     def calculate(self, ctx: FeatureContext) -> float | None:
         equity = ctx.current.get("total_equity")
         assets = ctx.current.get("total_assets")
-        return self.safe_divide(equity, assets)
+        # stage1-v1: 总资产（分母）必须 > 0
+        value, _ = self.safe_ratio(equity, assets, require_positive_denominator=True)
+        return value
 
 
 @FeatureRegistry.register

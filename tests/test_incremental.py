@@ -120,3 +120,69 @@ class TestValidateRecentPeriods:
         with pytest.raises(ValueError):
             validate_recent_periods("4")
 
+
+# ---------------------------------------------------------------------------
+# 失败传播测试（P1 #2：全部采集失败仍以退出码 0 结束）
+# ---------------------------------------------------------------------------
+
+class TestCrawlIncrementalFailurePropagation:
+    """P1 #2: 发生任一采集失败时返回 __failed_units__ 统计。"""
+
+    def test_all_units_fail_returns_failed_count(self, repo):
+        """全部采集单元失败 → 返回 __failed_units__ 计数。"""
+        from unittest.mock import MagicMock
+        from fin_feature.crawler.base import CrawlerError
+
+        crawler = MagicMock()
+        crawler.fetch_all.side_effect = CrawlerError("连接失败")
+
+        stats = crawl_incremental(
+            crawler, repo, ["002501.SZ", "600519.SH"],
+            report_names=["RPT_LICO_FN_CPD"],
+        )
+
+        # 失败单元被统计
+        assert stats.get("__failed_units__") == 2
+        # 无成功写入
+        assert stats.get("RPT_LICO_FN_CPD", 0) == 0
+
+    def test_partial_failure_returns_failed_count(self, repo):
+        """部分单元失败 → 失败单元被统计，成功单元正常写入。"""
+        from unittest.mock import MagicMock
+        from fin_feature.crawler.base import CrawlerError
+
+        crawler = MagicMock()
+        # 第一家公司成功，第二家失败
+        crawler.fetch_all.side_effect = [
+            [{"SECUCODE": "002501.SZ", "REPORTDATE": "2024-12-31",
+              "NOTICE_DATE": "2025-04-29", "TOTAL_OPERATE_INCOME": 1000.0}],
+            CrawlerError("连接失败"),
+        ]
+
+        stats = crawl_incremental(
+            crawler, repo, ["002501.SZ", "600519.SH"],
+            report_names=["RPT_LICO_FN_CPD"],
+        )
+
+        # 1 个失败单元
+        assert stats.get("__failed_units__") == 1
+        # 成功单元有写入
+        assert stats.get("RPT_LICO_FN_CPD", 0) > 0
+
+    def test_no_failure_no_failed_key(self, repo):
+        """全部成功 → 不含 __failed_units__ 键。"""
+        from unittest.mock import MagicMock
+
+        crawler = MagicMock()
+        crawler.fetch_all.return_value = [
+            {"SECUCODE": "002501.SZ", "REPORTDATE": "2024-12-31",
+             "NOTICE_DATE": "2025-04-29", "TOTAL_OPERATE_INCOME": 1000.0},
+        ]
+
+        stats = crawl_incremental(
+            crawler, repo, ["002501.SZ"],
+            report_names=["RPT_LICO_FN_CPD"],
+        )
+
+        assert "__failed_units__" not in stats
+

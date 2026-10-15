@@ -21,7 +21,11 @@ class NetProfitMargin(Feature):
     def calculate(self, ctx: FeatureContext) -> float | None:
         profit = ctx.current.get("parent_netprofit")
         revenue = ctx.current.get("total_operate_income")
-        return self.safe_divide(profit, revenue)
+        # stage1-v1: 营收（分母）必须 > 0，否则输出 None + non_positive_base
+        value, _ = self.safe_ratio(
+            profit, revenue, require_positive_denominator=True,
+        )
+        return value
 
 
 @FeatureRegistry.register
@@ -79,4 +83,11 @@ class RoeChangeRate(Feature):
         if ctx.year_ago is None:
             return None
         year_ago_roe = ctx.year_ago.get("weightavg_roe")
-        return self.pct_change(current_roe, year_ago_roe)
+        value, reason = self.pct_change_with_reason(current_roe, year_ago_roe)
+        if reason and ctx.diagnostics is not None:
+            ctx.diagnostics.append({
+                "field": "weightavg_roe",
+                "feature": "roe_change_rate",
+                "reason_code": reason,
+            })
+        return value

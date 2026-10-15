@@ -53,6 +53,33 @@ class Feature(ABC):
         return numerator / denominator
 
     @staticmethod
+    def safe_ratio(
+        numerator: float | None,
+        denominator: float | None,
+        require_positive_denominator: bool = False,
+        require_non_negative_numerator: bool = False,
+    ) -> tuple[float | None, str | None]:
+        """带合法条件的安全除法，返回 (值, reason_code)。
+
+        stage1-v1: 落实特征必要条件。
+        - require_positive_denominator: 分母必须 > 0（如营收、总资产为分母时）
+        - require_non_negative_numerator: 分子必须 >= 0（如负债为分子时）
+        返回 None 时附带可区分诊断：
+        - missing_input: 输入为 None
+        - non_positive_base: 分母 <= 0
+        - invalid_value: 分子为负但要求非负
+        """
+        if numerator is None or denominator is None:
+            return (None, "missing_input")
+        if require_positive_denominator and denominator <= 0:
+            return (None, "non_positive_base")
+        if require_non_negative_numerator and numerator < 0:
+            return (None, "invalid_value")
+        if denominator == 0:
+            return (None, "non_positive_base")
+        return (numerator / denominator, None)
+
+    @staticmethod
     def pct_change(current: float | None, base: float | None) -> float | None:
         """计算百分比变化率：(current - base) / base。
 
@@ -65,6 +92,21 @@ class Feature(ABC):
         if base <= 0:
             return None
         return (current - base) / base
+
+    @staticmethod
+    def pct_change_with_reason(
+        current: float | None, base: float | None
+    ) -> tuple[float | None, str | None]:
+        """计算百分比变化率并返回可区分原因。
+
+        stage1-v1: 区分 missing_input（输入缺失）和 non_positive_comparison_base（基数非正）。
+        返回 (值, reason_code)。值为非 None 时 reason_code 为 None。
+        """
+        if current is None or base is None:
+            return (None, "missing_input")
+        if base <= 0:
+            return (None, "non_positive_comparison_base")
+        return ((current - base) / base, None)
 
     @staticmethod
     def difference(current: float | None, base: float | None) -> float | None:
