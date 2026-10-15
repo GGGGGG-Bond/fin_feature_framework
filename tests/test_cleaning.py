@@ -1,4 +1,7 @@
-"""清洗模块测试：去重、异常值检测、缺失值处理、时间对齐。"""
+"""清洗模块测试：去重、异常值检测、缺失值处理、时间对齐。
+
+测试基于 stage1-v1 标准单位阈值。
+"""
 
 from fin_feature.cleaning.dedup import deduplicate
 from fin_feature.cleaning.missing import handle_missing
@@ -48,25 +51,63 @@ def test_dedup_keeps_latest_notice_date(repo):
 
 
 def test_outlier_threshold(repo):
-    """超出阈值的字段应置 NULL。"""
+    """超出阈值的字段应记日志但保留原值（stage1-v1）。
+
+    stage1-v1: 标准化后判断阈值；超标只记 clean_log，不清空原值。
+    阈值（标准单位：小数）：
+    - weightavg_roe: [-2.0, 2.0]
+    - gross_margin: [-1.0, 1.0]
+    """
+    # 原百分值 5.0（小数 0.05）在阈值内，应保留
     record = {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
-        "weightavg_roe": 500.0,  # 超出 [-200, 200]
-        "gross_margin": 30.0,    # 正常
+        "weightavg_roe": 5.0,    # 百分值 5%，标准化 0.05，在 [-2,2] 内
+        "gross_margin": 1.5,     # 百分值 1.5%，标准化 0.015，在 [-1,1] 内
     }
     fixed = detect_and_fix(repo, "financial_indicator", record)
-    assert fixed["weightavg_roe"] is None
-    assert fixed["gross_margin"] == 30.0
+    # 原值保留，不清空
+    assert fixed["weightavg_roe"] == 5.0
+    assert fixed["gross_margin"] == 1.5
+
+    # 真正超标的值：原百分值 500.0（标准化 5.0）超出 [-2,2]
+    record_big = {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "weightavg_roe": 500.0,  # 标准化 5.0，超出 [-2.0, 2.0]
+        "gross_margin": 150.0,   # 标准化 1.5，超出 [-1.0, 1.0]
+    }
+    fixed_big = detect_and_fix(repo, "financial_indicator", record_big)
+    # 超标仍保留原值（只记日志）
+    assert fixed_big["weightavg_roe"] == 500.0
+    assert fixed_big["gross_margin"] == 150.0
+    # 验证 clean_log 有诊断记录
+    logs = repo.get_clean_logs()
+    outlier_logs = [l for l in logs if l["action"] == "outlier_threshold"]
+    assert len(outlier_logs) >= 2  # 两个字段都记了日志
+
+    # 正常值应保留
+    record2 = {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "weightavg_roe": 0.15,   # 15%，正常
+        "gross_margin": 0.30,    # 30%，正常
+    }
+    fixed2 = detect_and_fix(repo, "financial_indicator", record2)
+    assert fixed2["weightavg_roe"] == 0.15
+    assert fixed2["gross_margin"] == 0.30
 
 
 def test_outlier_negative_on_positive_field(repo):
-    """应为正的字段出现负值应置 NULL。"""
+    """应为正的字段出现负值应记日志但保留原值（stage1-v1）。"""
     record = {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
         "total_assets": -1000.0,  # 总资产不应为负
     }
     fixed = detect_and_fix(repo, "balance_sheet", record)
-    assert fixed["total_assets"] is None
+    # 原值保留（只记日志）
+    assert fixed["total_assets"] == -1000.0
+    # 验证 clean_log 有诊断（阈值或负值检查均可触发）
+    logs = repo.get_clean_logs()
+    diag_logs = [l for l in logs if l["action"] in ("outlier_threshold", "outlier_negative")]
+    assert len(diag_logs) >= 1
 
 
 def test_missing_drop(repo):
@@ -97,7 +138,7 @@ def test_time_align_on_time(repo):
     """预期窗口内披露应标记 on_time。"""
     record = {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
-        "notice_date": "2025-04-29",  # 年报次年4月，在窗口内
+        "notice_date": "2025-04-29",  # 年报次年 4 月，在窗口内
     }
     result = align_time(repo, "financial_indicator", record)
     assert result["disclosure_status"] == "on_time"
@@ -108,7 +149,7 @@ def test_time_align_delayed(repo):
     """晚于窗口披露应标记 delayed。"""
     record = {
         "secucode": "002501.SZ", "report_date": "2024-12-31",
-        "notice_date": "2025-06-15",  # 年报应在1-4月，6月属延迟
+        "notice_date": "2025-06-15",  # 年报应在 1-4 月，6 月属延迟
     }
     result = align_time(repo, "financial_indicator", record)
     assert result["disclosure_status"] == "delayed"
@@ -130,17 +171,122 @@ def test_clean_table_pipeline(repo):
         _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
                   "notice_date": "2025-04-29",
                   "total_operate_income": 1000.0, "parent_netprofit": 200.0,
-                  "weightavg_roe": 15.0, "gross_margin": 30.0}),
+                  "weightavg_roe": 0.15, "gross_margin": 0.30}),
         _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
                   "notice_date": "2025-04-30",  # 修订版
                   "total_operate_income": 1100.0, "parent_netprofit": 220.0,
-                  "weightavg_roe": 16.0, "gross_margin": 31.0}),
+                  "weightavg_roe": 0.16, "gross_margin": 0.31}),
     ]
     stats = clean_table(repo, "financial_indicator", raw_records)
     assert stats.raw_count == 2
-    assert stats.dedup_count == 1  # 去重后1条
+    assert stats.dedup_count == 1  # 去重后 1 条
     assert stats.clean_count == 1
     # 验证清洗表写入
     row = repo.get_clean_record("financial_indicator", "002501.SZ", "2024-12-31")
     assert row is not None
     assert row["total_operate_income"] == 1100.0  # 保留修订版
+
+
+def test_drop_invalidates_old_clean_and_features(repo):
+    """P1 #4: 最新输入被 drop 后旧 clean 和特征应被失效。
+
+    场景：已有旧 clean 记录和特征，新原始数据核心字段缺失被 drop，
+    旧 clean 和特征应被删除，避免陈旧值残留。
+    """
+    # 1. 先写入旧 clean 记录和特征
+    repo.upsert_clean("financial_indicator", {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "total_operate_income": 1000.0, "parent_netprofit": 200.0,
+        "weightavg_roe": 0.15,
+    })
+    repo.upsert_feature("002501.SZ", "2024-12-31", "roe_change", 2.0, "profitability")
+
+    # 确认旧数据存在
+    assert repo.get_clean_record("financial_indicator", "002501.SZ", "2024-12-31") is not None
+    assert len(repo.get_features("002501.SZ", "2024-12-31")) >= 1
+
+    # 2. 新原始数据核心字段缺失 → 被 drop
+    raw_records = [
+        _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                  "notice_date": "2025-05-01",
+                  "total_operate_income": None,  # 核心字段缺失
+                  "parent_netprofit": 200.0}),
+    ]
+    stats = clean_table(repo, "financial_indicator", raw_records)
+    assert stats.dropped_count == 1
+
+    # 3. 旧 clean 和特征应被失效（删除）
+    assert repo.get_clean_record("financial_indicator", "002501.SZ", "2024-12-31") is None
+    assert len(repo.get_features("002501.SZ", "2024-12-31")) == 0
+
+    # 4. clean_log 应有失效记录
+    logs = repo.get_clean_logs()
+    invalidation_logs = [l for l in logs if l["action"] == "invalidated_on_drop"]
+    assert len(invalidation_logs) >= 1
+
+
+def test_drop_invalidates_only_stage1_features_preserves_legacy(repo):
+    """P1 #2: drop 失效只删除 stage1-v1 特征，保留 legacy 和其他版本。
+
+    审阅复现：同公司/报告期下混有 NULL、stage1-v1、其他版本特征，
+    确认只影响允许失效的集合（stage1-v1），不绕过 legacy 拒覆盖保护。
+    """
+    # 1. 写入旧 clean 记录
+    repo.upsert_clean("financial_indicator", {
+        "secucode": "002501.SZ", "report_date": "2024-12-31",
+        "total_operate_income": 1000.0, "parent_netprofit": 200.0,
+        "weightavg_roe": 0.15,
+    })
+
+    # 2. 同公司/报告期写入三种版本的特征
+    # legacy（NULL）
+    repo.conn.execute(
+        "INSERT INTO features (secucode, report_date, feature_name, feature_value, "
+        "feature_group, definition_version) VALUES (?, ?, ?, ?, ?, NULL)",
+        ("002501.SZ", "2024-12-31", "legacy_feat", 0.5, "profitability"),
+    )
+    # stage1-v1
+    repo.upsert_feature("002501.SZ", "2024-12-31", "stage1_feat", 2.0, "profitability")
+    # 其他版本 v2
+    repo.conn.execute(
+        "INSERT INTO features (secucode, report_date, feature_name, feature_value, "
+        "feature_group, definition_version) VALUES (?, ?, ?, ?, ?, ?)",
+        ("002501.SZ", "2024-12-31", "v2_feat", 3.0, "profitability", "stage2-v2"),
+    )
+    repo.conn.commit()
+
+    # 确认三种版本都存在
+    rows = repo.conn.execute(
+        "SELECT feature_name, definition_version FROM features "
+        "WHERE secucode = ? AND report_date = ?",
+        ("002501.SZ", "2024-12-31"),
+    ).fetchall()
+    assert len(rows) == 3
+
+    # 3. 新原始数据核心字段缺失 → drop
+    raw_records = [
+        _FakeRow({"secucode": "002501.SZ", "report_date": "2024-12-31",
+                  "notice_date": "2025-05-01",
+                  "total_operate_income": None,  # 核心字段缺失
+                  "parent_netprofit": 200.0}),
+    ]
+    clean_table(repo, "financial_indicator", raw_records)
+
+    # 4. stage1-v1 特征应被失效（删除）
+    stage1_rows = repo.conn.execute(
+        "SELECT feature_name FROM features "
+        "WHERE secucode = ? AND report_date = ? AND definition_version = 'stage1-v1'",
+        ("002501.SZ", "2024-12-31"),
+    ).fetchall()
+    assert len(stage1_rows) == 0  # stage1-v1 已删除
+
+    # 5. legacy 和其他版本应保留
+    remaining = repo.conn.execute(
+        "SELECT feature_name, definition_version FROM features "
+        "WHERE secucode = ? AND report_date = ?",
+        ("002501.SZ", "2024-12-31"),
+    ).fetchall()
+    remaining_names = {r[0] for r in remaining}
+    assert "legacy_feat" in remaining_names  # legacy 保留
+    assert "v2_feat" in remaining_names  # 其他版本保留
+    assert "stage1_feat" not in remaining_names  # stage1-v1 已删除

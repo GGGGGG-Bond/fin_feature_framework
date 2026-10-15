@@ -31,9 +31,23 @@ def init_schema(db_path: str) -> None:
             conn.execute(ddl)
         for idx in schema.ALL_INDEXES:
             conn.execute(idx)
+        # 幂等迁移：为已有 features 表补充 definition_version 列
+        _migrate_features_definition_version(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate_features_definition_version(conn: sqlite3.Connection) -> None:
+    """为已有 features 表幂等添加 definition_version 列。
+
+    旧库创建时无此列；新库 DDL 已包含。检查列是否存在，不存在则 ALTER TABLE。
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(features)").fetchall()}
+    if "definition_version" not in cols:
+        conn.execute(
+            "ALTER TABLE features ADD COLUMN definition_version TEXT"
+        )
 
 
 class Database:

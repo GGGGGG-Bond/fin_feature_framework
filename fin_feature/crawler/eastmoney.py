@@ -8,7 +8,7 @@
 filter 参数必须 URL 编码（requests 的 params 自动处理）。
 """
 
-from fin_feature.crawler.base import BaseCrawler
+from fin_feature.crawler.base import BaseCrawler, CrawlerError
 from fin_feature.utils.logger import setup_logger
 
 logger = setup_logger("fin_feature.crawler.eastmoney")
@@ -42,6 +42,38 @@ class EastMoneyCrawler(BaseCrawler):
         data = self._request_with_retry(self.base_url, params)
         return data
 
+    @staticmethod
+    def _validate_result(result, report_name: str, page_number: int) -> None:
+        """校验分页 result 结构。
+
+        stage1-v1: success=true 但 result 缺少 data/pages 或类型错误视为结构异常。
+        合法空数据：result 为 dict，data 为空 list，pages 为非负 int。
+        缺字段或类型错误应抛出异常，不当作合法空页。
+        """
+        if not isinstance(result, dict):
+            raise CrawlerError(
+                f"reportName={report_name} 第 {page_number} 页 result 非对象: "
+                f"{type(result).__name__}"
+            )
+        if "data" not in result:
+            raise CrawlerError(
+                f"reportName={report_name} 第 {page_number} 页 result 缺少 data 字段"
+            )
+        if not isinstance(result["data"], list):
+            raise CrawlerError(
+                f"reportName={report_name} 第 {page_number} 页 data 非列表: "
+                f"{type(result['data']).__name__}"
+            )
+        if "pages" not in result:
+            raise CrawlerError(
+                f"reportName={report_name} 第 {page_number} 页 result 缺少 pages 字段"
+            )
+        pages = result["pages"]
+        if isinstance(pages, bool) or not isinstance(pages, int) or pages < 0:
+            raise CrawlerError(
+                f"reportName={report_name} 第 {page_number} 页 pages 非法: {pages}"
+            )
+
     def fetch_all(
         self,
         report_name: str,
@@ -54,18 +86,32 @@ class EastMoneyCrawler(BaseCrawler):
 
         先请求第一页获取总页数，再循环获取后续页。
         max_pages 限制最大页数（防止意外拉取过多数据）。
+
+        stage1-v1: 每页校验 success 和 result 结构；
+        失败页抛异常，不返回部分数据（失败单元不提交）。
+        合法成功空数据（success=true, result 存在但 data 为空）返回空列表。
         """
         first = self.fetch_page(
             report_name, page_number=1, filters=filters,
             sort_columns=sort_columns, sort_types=sort_types,
         )
+        # 校验第一页结构
+        if not first.get("success", False):
+            raise CrawlerError(
+                f"reportName={report_name} 第一页请求失败: {first.get('message', '未知错误')}"
+            )
         result = first.get("result")
-        if not result:
-            logger.warning("reportName=%s 第一页无数据: %s", report_name, first.get("message"))
-            return []
+        if result is None:
+            # success=true 但 result=None 视为结构异常
+            raise CrawlerError(
+                f"reportName={report_name} 第一页 result 结构异常（success=true 但无 result）"
+            )
 
-        all_data: list[dict] = list(result.get("data", []))
-        total_pages = result.get("pages", 1)
+        # stage1-v1: 校验 result 对象结构（data 列表、pages 整数）
+        self._validate_result(result, report_name, 1)
+
+        all_data: list[dict] = list(result["data"])
+        total_pages = result["pages"]
         if max_pages is not None:
             total_pages = min(total_pages, max_pages)
 
@@ -79,8 +125,20 @@ class EastMoneyCrawler(BaseCrawler):
                 report_name, page_number=page, filters=filters,
                 sort_columns=sort_columns, sort_types=sort_types,
             )
+            # 校验每页结构
+            if not page_data.get("success", False):
+                raise CrawlerError(
+                    f"reportName={report_name} 第 {page} 页请求失败: "
+                    f"{page_data.get('message', '未知错误')}"
+                )
             page_result = page_data.get("result")
-            if page_result and page_result.get("data"):
+            if page_result is None:
+                raise CrawlerError(
+                    f"reportName={report_name} 第 {page} 页 result 结构异常"
+                )
+            # stage1-v1: 校验 result 对象结构
+            self._validate_result(page_result, report_name, page)
+            if page_result["data"]:
                 all_data.extend(page_result["data"])
             logger.info("已获取第 %d/%d 页", page, total_pages)
 

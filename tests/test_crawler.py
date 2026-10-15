@@ -1,6 +1,13 @@
-"""爬虫模块测试：filter 构建、字段映射、分页逻辑。"""
+"""爬虫模块测试：filter 构建、字段映射、分页逻辑、分页失败传播。
 
-from fin_feature.crawler.base import BaseCrawler
+对应契约 T03-T05。
+"""
+
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+from fin_feature.crawler.base import BaseCrawler, CrawlerError
 from fin_feature.crawler.eastmoney import EastMoneyCrawler
 from fin_feature.crawler.rate_limiter import RateLimiter
 from fin_feature.storage.field_mapping import map_fields
@@ -92,3 +99,141 @@ def test_eastmoney_crawler_init():
     assert crawler.page_size == 20
     assert crawler.base_url == "http://example.com"
     assert "User-Agent" in crawler.session.headers
+
+
+# ---------------------------------------------------------------------------
+# 分页失败传播测试（T03-T05）
+# ---------------------------------------------------------------------------
+
+class TestPaginationFailure:
+    """T03-T05: 分页失败不返回部分数据，传播异常。"""
+
+    def test_second_page_failure_raises(self):
+        """T03: 第二页 success=false → 抛异常，不返回第一页部分数据。"""
+        crawler = EastMoneyCrawler("http://example.com", min_interval=0)
+
+        # mock fetch_page：第一页成功，第二页失败
+        page1 = {
+            "success": True,
+            "result": {"pages": 2, "data": [{"SECUCODE": "002501.SZ"}]},
+        }
+        page2 = {"success": False, "message": "服务器错误"}
+
+        with patch.object(crawler, "fetch_page", side_effect=[page1, page2]):
+            with pytest.raises(CrawlerError):
+                crawler.fetch_all("RPT_LICO_FN_CPD")
+
+    def test_second_page_result_none_raises(self):
+        """T03: 第二页 result=None（结构异常）→ 抛异常。"""
+        crawler = EastMoneyCrawler("http://example.com", min_interval=0)
+
+        page1 = {
+            "success": True,
+            "result": {"pages": 2, "data": [{"SECUCODE": "002501.SZ"}]},
+        }
+        page2 = {"success": True, "result": None}  # 结构异常
+
+        with patch.object(crawler, "fetch_page", side_effect=[page1, page2]):
+            with pytest.raises(CrawlerError):
+                crawler.fetch_all("RPT_LICO_FN_CPD")
+
+    def test_first_page_success_false_raises(self):
+        """T05: 第一页 success=false → 抛异常。"""
+        crawler = EastMoneyCrawler("http://example.com", min_interval=0)
+
+        page1 = {"success": False, "message": "参数错误"}
+
+        with patch.object(crawler, "fetch_page", return_value=page1):
+            with pytest.raises(CrawlerError):
+                crawler.fetch_all("RPT_LICO_FN_CPD")
+
+    def test_empty_success_returns_empty(self):
+        """T05: 合法成功空数据（success=true, data=[]）→ 返回空列表。"""
+        crawler = EastMoneyCrawler("http://example.com", min_interval=0)
+
+        page1 = {
+            "success": True,
+            "result": {"pages": 1, "data": []},
+        }
+
+        with patch.object(crawler, "fetch_page", return_value=page1):
+            result = crawler.fetch_all("RPT_LICO_FN_CPD")
+        assert result == []
+
+    def test_single_page_success(self):
+        """单页成功 → 返回数据。"""
+        crawler = EastMoneyCrawler("http://example.com", min_interval=0)
+
+        page1 = {
+            "success": True,
+            "result": {
+                "pages": 1,
+                "data": [{"SECUCODE": "002501.SZ"}, {"SECUCODE": "600519.SH"}],
+            },
+        }
+
+        with patch.object(crawler, "fetch_page", return_value=page1):
+            result = crawler.fetch_all("RPT_LICO_FN_CPD")
+        assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# 结构校验测试（P1 #3：缺少 data 的成功分页仍被当作合法空页）
+# ---------------------------------------------------------------------------
+
+class TestResultStructureValidation:
+    """P1 #3: success=true 但 result 缺少 data/pages 或类型错误应抛异常。"""
+
+    def test_result_missing_data_raises(self):
+        """success=true 但 result 缺少 data 字段 → 抛异常。"""
+        crawler = EastMoneyCrawler("http://example.com", min_interval=0)
+        page1 = {"success": True, "result": {"pages": 1}}  # 缺 data
+
+        with patch.object(crawler, "fetch_page", return_value=page1):
+            with pytest.raises(CrawlerError):
+                crawler.fetch_all("RPT_LICO_FN_CPD")
+
+    def test_result_data_not_list_raises(self):
+        """data 非列表 → 抛异常。"""
+        crawler = EastMoneyCrawler("http://example.com", min_interval=0)
+        page1 = {"success": True, "result": {"pages": 1, "data": "not_a_list"}}
+
+        with patch.object(crawler, "fetch_page", return_value=page1):
+            with pytest.raises(CrawlerError):
+                crawler.fetch_all("RPT_LICO_FN_CPD")
+
+    def test_result_missing_pages_raises(self):
+        """result 缺少 pages 字段 → 抛异常。"""
+        crawler = EastMoneyCrawler("http://example.com", min_interval=0)
+        page1 = {"success": True, "result": {"data": []}}  # 缺 pages
+
+        with patch.object(crawler, "fetch_page", return_value=page1):
+            with pytest.raises(CrawlerError):
+                crawler.fetch_all("RPT_LICO_FN_CPD")
+
+    def test_result_pages_not_int_raises(self):
+        """pages 非整数 → 抛异常。"""
+        crawler = EastMoneyCrawler("http://example.com", min_interval=0)
+        page1 = {"success": True, "result": {"pages": "2", "data": []}}
+
+        with patch.object(crawler, "fetch_page", return_value=page1):
+            with pytest.raises(CrawlerError):
+                crawler.fetch_all("RPT_LICO_FN_CPD")
+
+    def test_result_not_dict_raises(self):
+        """result 非对象 → 抛异常。"""
+        crawler = EastMoneyCrawler("http://example.com", min_interval=0)
+        page1 = {"success": True, "result": "unexpected_string"}
+
+        with patch.object(crawler, "fetch_page", return_value=page1):
+            with pytest.raises(CrawlerError):
+                crawler.fetch_all("RPT_LICO_FN_CPD")
+
+    def test_empty_data_list_is_valid(self):
+        """合法空数据：data=[] 且 pages=1 → 返回空列表（不抛异常）。"""
+        crawler = EastMoneyCrawler("http://example.com", min_interval=0)
+        page1 = {"success": True, "result": {"pages": 1, "data": []}}
+
+        with patch.object(crawler, "fetch_page", return_value=page1):
+            result = crawler.fetch_all("RPT_LICO_FN_CPD")
+        assert result == []

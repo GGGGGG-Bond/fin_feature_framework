@@ -198,12 +198,13 @@ CREATE TABLE IF NOT EXISTS clean_balance_sheet (
 # 特征长表
 DDL_FEATURES = """
 CREATE TABLE IF NOT EXISTS features (
-    secucode        TEXT NOT NULL,
-    report_date     TEXT NOT NULL,
-    feature_name    TEXT NOT NULL,
-    feature_value   REAL,
-    feature_group   TEXT,
-    computed_at     TEXT DEFAULT (datetime('now', 'localtime')),
+    secucode            TEXT NOT NULL,
+    report_date         TEXT NOT NULL,
+    feature_name        TEXT NOT NULL,
+    feature_value       REAL,
+    feature_group       TEXT,
+    definition_version  TEXT,
+    computed_at         TEXT DEFAULT (datetime('now', 'localtime')),
     PRIMARY KEY (secucode, report_date, feature_name)
 );
 """

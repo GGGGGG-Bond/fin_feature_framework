@@ -1,12 +1,12 @@
-"""特征回测框架：对生成的特征进行分组回测。
+"""特征分组分析：对生成的特征进行分组，分析各组后续盈利增长表现。
 
-回测逻辑：
-1. 在分组日（formation_date）按特征值排序，分 N 组（默认5组）
-2. 计算各组在下一报告期的"收益代理"（默认：净利润同比增速）
-3. 输出各组收益、多空收益（最高组 - 最低组）
+分析逻辑：
+1. 在分组日（formation_date）按特征值排序，分 N 组（默认 5 组）
+2. 计算各组在下一报告期的"盈利增长代理"（默认：净利润同比增速）
+3. 输出各组增长、最高组与最低组差异
 
-收益代理说明：本项目仅爬财务数据，无行情数据。
-采用"下一报告期净利润同比增速"作为收益代理，纯财务数据驱动。
+注意：本分析使用纯财务数据，无行情数据。
+收益代理为"下一报告期净利润同比增速"，非投资收益或交易回报。
 """
 
 from dataclasses import dataclass, field
@@ -20,7 +20,7 @@ logger = setup_logger("fin_feature.addons.backtest")
 
 @dataclass
 class BacktestResult:
-    """回测结果。"""
+    """分组分析结果。"""
 
     feature_name: str
     formation_date: str
@@ -33,7 +33,7 @@ class BacktestResult:
 def _next_period_profit_yoy(
     repo: Repository, secucode: str, formation_date: str
 ) -> float | None:
-    """获取分组日下一报告期的净利润同比增速（收益代理）。
+    """获取分组日下一报告期的净利润同比增速（盈利增长代理）。
 
     查找 formation_date 之后最近的报告期，取其 profit_yoy 特征值。
     """
@@ -41,6 +41,7 @@ def _next_period_profit_yoy(
         "SELECT feature_value FROM features "
         "WHERE secucode = ? AND feature_name = 'profit_yoy' "
         "AND report_date > ? AND feature_value IS NOT NULL "
+        "AND definition_version = 'stage1-v1' "
         "ORDER BY report_date ASC LIMIT 1"
     )
     row = repo.conn.execute(sql, (secucode, formation_date)).fetchone()
@@ -54,12 +55,14 @@ def run_backtest(
     n_groups: int = 5,
     return_proxy: str = "next_profit_yoy",
 ) -> BacktestResult:
-    """执行分组回测。
+    """执行特征分组分析。
 
     feature_name: 用于分组的特征名
     formation_date: 分组日（报告期）
     n_groups: 分组数
-    return_proxy: 收益代理（目前仅支持 next_profit_yoy）
+    return_proxy: 盈利增长代理（目前仅支持 next_profit_yoy）
+
+    注意：输出为盈利增长分析结果，非投资收益回测。
     """
     result = BacktestResult(
         feature_name=feature_name,
@@ -93,7 +96,7 @@ def run_backtest(
         else:
             groups.append(sorted_rows[start:start + group_size])
 
-    # 4. 计算各组收益代理
+    # 4. 计算各组盈利增长代理
     group_stats: list[dict] = []
     for i, group in enumerate(groups):
         returns: list[float] = []
@@ -121,12 +124,12 @@ def run_backtest(
 
     result.group_stats = group_stats
 
-    # 5. 多空收益（最高组 - 最低组）
+    # 5. 组间差异（最高组 - 最低组）
     if group_stats and group_stats[0]["avg_return"] is not None and group_stats[-1]["avg_return"] is not None:
         result.long_short = group_stats[-1]["avg_return"] - group_stats[0]["avg_return"]
 
     logger.info(
-        "回测完成: 特征=%s 分组日=%s 样本=%d 多空收益=%s",
+        "分组分析完成：特征=%s 分组日=%s 样本=%d 组间差异=%s",
         feature_name, formation_date, result.total_samples,
         f"{result.long_short:.4f}" if result.long_short is not None else "N/A",
     )
@@ -134,15 +137,15 @@ def run_backtest(
 
 
 def format_report(result: BacktestResult) -> str:
-    """将回测结果格式化为可读报告。"""
+    """将分组分析结果格式化为可读报告。"""
     lines = [
-        f"=== 特征回测报告 ===",
-        f"特征: {result.feature_name}",
-        f"分组日: {result.formation_date}",
-        f"分组数: {result.n_groups}",
-        f"总样本: {result.total_samples}",
+        "=== 特征分组分析报告 ===",
+        f"特征：{result.feature_name}",
+        f"分组日：{result.formation_date}",
+        f"分组数：{result.n_groups}",
+        f"总样本：{result.total_samples}",
         "",
-        f"{'组别':<6}{'样本':<6}{'有效':<6}{'平均收益':<12}{'特征值范围':<24}",
+        f"{'组别':<6}{'样本':<6}{'有效':<6}{'平均盈利增长':<12}{'特征值范围':<24}",
         "-" * 60,
     ]
     for stat in result.group_stats:
@@ -154,7 +157,8 @@ def format_report(result: BacktestResult) -> str:
         )
     lines.append("-" * 60)
     ls = f"{result.long_short:.4f}" if result.long_short is not None else "N/A"
-    lines.append(f"多空收益 (最高组-最低组): {ls}")
+    lines.append(f"组间差异 (最高组 - 最低组): {ls}")
     lines.append("")
-    lines.append("注: 收益代理为「下一报告期净利润同比增速」，纯财务数据驱动，无行情数据。")
+    lines.append("注：本分析使用纯财务数据，盈利增长代理为「下一报告期净利润同比增速」。")
+    lines.append("    输出为盈利增长分析结果，非投资收益或交易回报。")
     return "\n".join(lines)

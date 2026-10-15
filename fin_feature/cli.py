@@ -54,7 +54,7 @@ def cmd_crawl(args) -> None:
     logger.info("开始爬取 %d 只股票列表...", stock_count)
     stocks = stock_crawler.fetch_stock_list(stock_count)
     repo.upsert_stock_list(stocks)
-    logger.info("股票列表爬取完成: %d 只", len(stocks))
+    logger.info("股票列表爬取完成：%d 只", len(stocks))
 
     # 2. 爬取三张报表
     em_crawler = EastMoneyCrawler(
@@ -74,21 +74,38 @@ def cmd_crawl(args) -> None:
     }
 
     secucodes = [s["secucode"] for s in stocks]
+    # 读取 recent_periods 配置
+    recent_periods = config.crawl.get("recent_periods")
+    from fin_feature.addons.incremental import select_recent_periods, validate_recent_periods
+    # 请求前校验 N
+    recent_periods = validate_recent_periods(recent_periods)
+
+    failed_units: list[str] = []
     for report_name, table_suffix in report_map.items():
-        logger.info("开始爬取 %s (%d 家公司)...", report_name, len(secucodes))
+        logger.info("开始爬取 %s (%d 家公司，recent_periods=%s)...", report_name, len(secucodes), recent_periods)
         total = 0
         for i, secucode in enumerate(secucodes, 1):
             try:
                 records = em_crawler.fetch_by_company(secucode, report_name)
+                # N 期选择：保留目标期内全部记录（含修订）
+                if recent_periods is not None:
+                    records = select_recent_periods(records, recent_periods)
                 mapped = [map_fields(r, report_name) for r in records]
                 written = repo.batch_upsert_raw(table_suffix, mapped)
                 total += written
                 logger.info("[%d/%d] %s %s: %d 条", i, len(secucodes), secucode, table_suffix, written)
             except Exception as exc:
-                logger.error("爬取 %s %s 失败: %s", secucode, report_name, exc)
-        logger.info("%s 爬取完成: 共 %d 条", report_name, total)
+                logger.error("爬取 %s %s 失败（单元失败，不提交）：%s", secucode, report_name, exc)
+                failed_units.append(f"{secucode}/{report_name}")
+        logger.info("%s 爬取完成：共 %d 条", report_name, total)
 
     db.close()
+
+    # 汇总失败单元，非零退出
+    if failed_units:
+        logger.error("爬取完成，但 %d 个单元失败: %s", len(failed_units), failed_units)
+        return 1
+    return 0
 
 
 def cmd_clean(args) -> None:
@@ -100,7 +117,9 @@ def cmd_clean(args) -> None:
 
     db, repo = _get_db_and_repo(config)
     logger.info("开始数据清洗...")
-    stats = run_cleaning(repo)
+    # 传入 YAML 清洗配置
+    cleaning_config = config.cleaning
+    stats = run_cleaning(repo, config=cleaning_config)
     for s in stats:
         logger.info(
             "表 %s: 原始%d -> 去重%d -> 丢弃%d -> 清洗%d",
@@ -120,7 +139,7 @@ def cmd_features(args) -> None:
     logger.info("开始特征计算...")
     groups = config.features.get("groups")
     count = compute_all(repo, groups=groups)
-    logger.info("特征计算完成: %d 条", count)
+    logger.info("特征计算完成：%d 条", count)
     db.close()
 
 
@@ -168,12 +187,25 @@ def cmd_incremental(args) -> None:
     if not secucodes:
         logger.error("无股票列表，请先执行 crawl")
         db.close()
-        return
-    logger.info("增量爬取 %d 家公司...", len(secucodes))
-    stats = crawl_incremental(em_crawler, repo, secucodes)
+        return 1
+    # 读取 recent_periods 配置
+    recent_periods = config.crawl.get("recent_periods")
+    logger.info("增量爬取 %d 家公司，recent_periods=%s...", len(secucodes), recent_periods)
+    try:
+        stats = crawl_incremental(em_crawler, repo, secucodes, recent_periods=recent_periods)
+    except ValueError as exc:
+        logger.error("配置错误: %s", exc)
+        db.close()
+        return 1
+    failed_units = stats.pop("__failed_units__", 0)
     for report_name, count in stats.items():
         logger.info("%s: 新增 %d 条", report_name, count)
     db.close()
+    # stage1-v1: 发生任一采集失败时非零退出
+    if failed_units:
+        logger.error("增量爬取完成，但 %d 个单元失败", failed_units)
+        return 1
+    return 0
 
 
 def cmd_backtest(args) -> None:
@@ -213,9 +245,9 @@ def main() -> None:
     sub.add_parser("crawl", help="爬取财务数据")
     sub.add_parser("clean", help="清洗数据")
     sub.add_parser("features", help="计算特征")
-    sub.add_parser("quality", help="生成质量报告")
+    sub.add_parser("quality", help="生成数据质量报告")
     sub.add_parser("incremental", help="增量爬取")
-    bt = sub.add_parser("backtest", help="特征回测")
+    bt = sub.add_parser("backtest", help="特征回测（分组分析）")
     bt.add_argument("--feature", required=True, help="用于分组的特征名")
     bt.add_argument("--date", required=True, help="分组日（报告期，如 2024-12-31）")
 
@@ -229,7 +261,10 @@ def main() -> None:
         "incremental": cmd_incremental,
         "backtest": cmd_backtest,
     }
-    commands[args.command](args)
+    result = commands[args.command](args)
+    # 传播退出码（None 视为成功）
+    if result is not None and result != 0:
+        sys.exit(result)
 
 
 if __name__ == "__main__":

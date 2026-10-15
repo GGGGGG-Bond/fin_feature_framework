@@ -15,13 +15,21 @@ from typing import Any
 
 @dataclass
 class FeatureContext:
-    """特征计算上下文，包含三时点的合并数据。"""
+    """特征计算上下文，包含三时点的合并数据。
+
+    current/previous/year_ago: 标准化后的累计值（供同比特征使用）
+    current_sq/previous_sq: 标准化后的单季值（供环比特征使用），向后兼容默认 None
+    diagnostics: 结构化诊断列表，按 feature_name 索引由引擎收集
+    """
 
     secucode: str
     report_date: str
-    current: dict[str, Any]            # 当期三表合并数据
-    previous: dict[str, Any] | None    # 上一报告期（环比）
-    year_ago: dict[str, Any] | None    # 去年同期（同比）
+    current: dict[str, Any]            # 当期三表合并数据（标准化累计值）
+    previous: dict[str, Any] | None    # 上一报告期（环比基准，标准化累计值）
+    year_ago: dict[str, Any] | None    # 去年同期（同比基准，标准化累计值）
+    current_sq: dict[str, Any] | None = None   # 当期单季值（标准化）
+    previous_sq: dict[str, Any] | None = None  # 上一报告期单季值（标准化）
+    diagnostics: list[dict] | None = None     # 结构化诊断
 
 
 class Feature(ABC):
@@ -45,16 +53,60 @@ class Feature(ABC):
         return numerator / denominator
 
     @staticmethod
-    def pct_change(current: float | None, base: float | None) -> float | None:
-        """计算百分比变化率：(current - base) / |base|。
+    def safe_ratio(
+        numerator: float | None,
+        denominator: float | None,
+        require_positive_denominator: bool = False,
+        require_non_negative_numerator: bool = False,
+    ) -> tuple[float | None, str | None]:
+        """带合法条件的安全除法，返回 (值, reason_code)。
 
-        base 为 0 或 None 时返回 None。结果为小数（如 0.2 表示 20%）。
+        stage1-v1: 落实特征必要条件。
+        - require_positive_denominator: 分母必须 > 0（如营收、总资产为分母时）
+        - require_non_negative_numerator: 分子必须 >= 0（如负债为分子时）
+        返回 None 时附带可区分诊断：
+        - missing_input: 输入为 None
+        - non_positive_base: 分母 <= 0
+        - invalid_value: 分子为负但要求非负
+        """
+        if numerator is None or denominator is None:
+            return (None, "missing_input")
+        if require_positive_denominator and denominator <= 0:
+            return (None, "non_positive_base")
+        if require_non_negative_numerator and numerator < 0:
+            return (None, "invalid_value")
+        if denominator == 0:
+            return (None, "non_positive_base")
+        return (numerator / denominator, None)
+
+    @staticmethod
+    def pct_change(current: float | None, base: float | None) -> float | None:
+        """计算百分比变化率：(current - base) / base。
+
+        stage1-v1: 比较基数为零或负数时返回 None（non_positive_comparison_base）。
+        不使用绝对分母。当期为负、基数为正时可计算负增长（如 10→-5 = -1.5）。
+        结果为小数（如 0.2 表示 20%）。
         """
         if current is None or base is None:
             return None
-        if base == 0:
+        if base <= 0:
             return None
-        return (current - base) / abs(base)
+        return (current - base) / base
+
+    @staticmethod
+    def pct_change_with_reason(
+        current: float | None, base: float | None
+    ) -> tuple[float | None, str | None]:
+        """计算百分比变化率并返回可区分原因。
+
+        stage1-v1: 区分 missing_input（输入缺失）和 non_positive_comparison_base（基数非正）。
+        返回 (值, reason_code)。值为非 None 时 reason_code 为 None。
+        """
+        if current is None or base is None:
+            return (None, "missing_input")
+        if base <= 0:
+            return (None, "non_positive_comparison_base")
+        return ((current - base) / base, None)
 
     @staticmethod
     def difference(current: float | None, base: float | None) -> float | None:

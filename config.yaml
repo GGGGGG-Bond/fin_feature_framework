@@ -1,4 +1,5 @@
 # 金融数据处理与特征工程框架 - 主配置
+# 配置版本：stage1-v1
 
 database:
   path: "data/finance.db"
@@ -23,22 +24,24 @@ crawl:
   # 近 N 个报告期；不填则爬取公司全部历史
   recent_periods: 4
 
-# 清洗规则
+# 清洗规则（标准单位：小数为比例，金额为元）
+# 定义版本：stage1-v1
 cleaning:
   # 异常值阈值：字段 -> [min, max]，超出范围置 NULL 并记日志
+  # 阈值使用标准单位（小数）
   outlier_thresholds:
-    weightavg_roe: [-200.0, 200.0]
-    gross_margin: [-100.0, 100.0]
-    debt_asset_ratio: [0.0, 100.0]
-    current_ratio: [0.0, 100.0]
-    net_profit_margin: [-100.0, 100.0]
-    bps: [-1000.0, 100000.0]
+    weightavg_roe: [-2.0, 2.0]       # 加权 ROE，小数（-200% 到 200%）
+    gross_margin: [-1.0, 1.0]         # 毛利率，小数（-100% 到 100%）
+    debt_asset_ratio: [0.0, 2.0]      # 资产负债率，小数（允许超过 1）
+    current_ratio: [0.0, 20.0]        # 流动比率，倍数
+    net_profit_margin: [-10.0, 10.0]  # 净利率，小数
+    bps: [-1000.0, 10000.0]           # 每股净资产，元
     total_operate_income: [-1.0e13, 1.0e13]
     parent_netprofit: [-1.0e13, 1.0e13]
     total_assets: [0.0, 1.0e14]
     total_liabilities: [0.0, 1.0e14]
     total_equity: [-1.0e13, 1.0e14]
-  # 缺失值策略：drop=丢弃整条记录, zero=填0, keep=保留NULL
+  # 缺失值策略：drop=丢弃整条记录，zero=填 0，keep=保留 NULL
   missing_strategy:
     total_operate_income: drop
     parent_netprofit: drop
@@ -56,10 +59,11 @@ features:
     - growth
     - solvency
 
-# 回测
+# 回测（分组分析）
 backtest:
   n_groups: 5
   # 收益代理：next_profit_yoy = 下一报告期净利润同比增速
+  # 注意：这是盈利增长分析代理，非投资收益回测
   return_proxy: "next_profit_yoy"
 
 # 日志

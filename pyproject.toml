@@ -17,7 +17,7 @@ dev = ["pytest>=7.0"]
 
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["fin_feature*"]
@@ -25,3 +25,6 @@ include = ["fin_feature*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "requires_network: 需要网络连接的测试（真实 API 爬取），CI 可用 -m 'not requires_network' 跳过",
+]
