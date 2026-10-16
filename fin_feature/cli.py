@@ -210,6 +210,57 @@ def cmd_incremental(args) -> None:
     return 0
 
 
+def cmd_audit_raw(args) -> int:
+    """只读对账采集证据（audit-raw）：不写数据库、不改证据文件。"""
+    import sqlite3
+    from pathlib import Path
+
+    config = load_config(args.config)
+    logger = setup_logger(level=config.logging.get("level", "INFO"),
+                          log_file=config.logging.get("file"))
+
+    if not args.run_id and not args.all_runs:
+        logger.error("audit-raw 必须指定 --run-id 或 --all")
+        return 2
+
+    from fin_feature.storage.database import get_connection
+    from fin_feature.storage.raw_audit import audit_raw
+    from fin_feature.storage.raw_store import build_raw_store
+
+    # 只读：不执行迁移、不建表，直接连接既有库
+    conn = get_connection(config.db_path)
+    try:
+        tables = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "ingest_unit" not in tables:
+            logger.error("数据库缺少 v4 采集证据结构（ingest_unit），请先完成迁移")
+            return 1
+        try:
+            raw_store = build_raw_store(config, config.db_path)
+        except ValueError as exc:
+            logger.error("配置错误: %s", exc)
+            return 2
+        report = audit_raw(conn, raw_store, run_id=args.run_id)
+    except sqlite3.Error as exc:
+        logger.error("读取数据库失败: %s", exc)
+        return 1
+    finally:
+        conn.close()
+
+    text = report.format_text()
+    print(text)
+
+    report_dir = Path(args.report_dir or "data/audit")
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / f"audit-raw_{report.scope}_{datetime.now():%Y%m%d%H%M%S}.txt"
+    report_path.write_text(text + "\n", encoding="utf-8")
+    logger.info("对账报告已保存至 %s", report_path)
+    return report.exit_code()
+
+
 def cmd_backtest(args) -> None:
     """特征回测。"""
     config = load_config(args.config)
@@ -253,6 +304,13 @@ def main() -> None:
     bt.add_argument("--feature", required=True, help="用于分组的特征名")
     bt.add_argument("--date", required=True, help="分组日（报告期，如 2024-12-31）")
 
+    ar = sub.add_parser("audit-raw", help="只读对账采集证据（不改数据库与证据文件）")
+    ar.add_argument("--run-id", default=None, help="只检查指定采集批次")
+    ar.add_argument("--all", dest="all_runs", action="store_true",
+                    help="检查全部批次（与 --run-id 二选一）")
+    ar.add_argument("--report-dir", default=None,
+                    help="对账报告输出目录（默认 data/audit）")
+
     args = parser.parse_args()
 
     commands = {
@@ -262,6 +320,7 @@ def main() -> None:
         "quality": cmd_quality,
         "incremental": cmd_incremental,
         "backtest": cmd_backtest,
+        "audit-raw": cmd_audit_raw,
     }
     result = commands[args.command](args)
     # 传播退出码（None 视为成功）

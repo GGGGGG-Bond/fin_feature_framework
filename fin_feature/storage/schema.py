@@ -444,6 +444,86 @@ ALL_INDEXES_STAGE2 = [
     "CREATE INDEX IF NOT EXISTS idx_so_snapshot ON statement_observation(snapshot_id);",
 ]
 
+# ========== 阶段 2B（v4）：采集证据模型 ==========
+# 契约：docs/stage-2/2b-schema.md。
+# 注意：以下对象不属于 ALL_DDL / ALL_INDEXES，避免 v1 基线提前创建 v4 结构；
+# 由 migrate_v4_ingestion_evidence 增量创建，空库按 v1→v2→v3→v4 顺序执行。
+
+# 采集单元：一次运行内的一个逻辑请求单元（来源+报表+公司+规范化范围）
+DDL_INGEST_UNIT = """
+CREATE TABLE IF NOT EXISTS ingest_unit (
+    unit_id         TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL REFERENCES ingest_run(run_id),
+    unit_key        TEXT NOT NULL CHECK(length(unit_key)=64 AND unit_key NOT GLOB '*[^0-9a-f]*'),
+    source_name     TEXT NOT NULL,
+    unit_kind       TEXT NOT NULL CHECK(unit_kind IN ('financial','stock_list')),
+    report_name     TEXT NOT NULL,
+    secucode        TEXT NOT NULL,
+    request_scope   TEXT NOT NULL,
+    status          TEXT NOT NULL CHECK(status IN ('planned','running','success','success_empty','failed')),
+    started_at      TEXT,
+    ended_at        TEXT,
+    failure_code    TEXT,
+    source_rows     INTEGER NOT NULL DEFAULT 0 CHECK(source_rows>=0),
+    selected_rows   INTEGER NOT NULL DEFAULT 0 CHECK(selected_rows>=0),
+    new_versions    INTEGER NOT NULL DEFAULT 0 CHECK(new_versions>=0),
+    new_observations INTEGER NOT NULL DEFAULT 0 CHECK(new_observations>=0),
+    compat_writes   INTEGER NOT NULL DEFAULT 0 CHECK(compat_writes>=0),
+    detail          TEXT,
+    UNIQUE(run_id, unit_key)
+);
+"""
+
+# HTTP 尝试：每页每次实际 HTTP 调用的观察记录（含重试）
+DDL_INGEST_ATTEMPT = """
+CREATE TABLE IF NOT EXISTS ingest_attempt (
+    attempt_id      TEXT PRIMARY KEY,
+    unit_id         TEXT NOT NULL REFERENCES ingest_unit(unit_id),
+    page_number     INTEGER NOT NULL CHECK(page_number>=1),
+    http_attempt    INTEGER NOT NULL CHECK(http_attempt>=1),
+    started_at      TEXT NOT NULL,
+    ended_at        TEXT,
+    outcome         TEXT NOT NULL CHECK(outcome IN (
+        'running','ok','http_error','business_error','decode_error','schema_error',
+        'transport_error','storage_error'
+    )),
+    error_code      TEXT,
+    detail          TEXT,
+    UNIQUE(unit_id,page_number,http_attempt)
+);
+"""
+
+# raw_snapshot 的 v4 增列（v3 库已有此表；旧行保持 legacy-unverified）
+V4_RAW_SNAPSHOT_COLUMNS = [
+    # (列名, 类型/约束片段)
+    ("attempt_id", "TEXT REFERENCES ingest_attempt(attempt_id)"),
+    ("raw_format", "TEXT NOT NULL DEFAULT 'legacy-unverified' "
+                   "CHECK(raw_format IN ('legacy-unverified','http-body-v1'))"),
+    ("http_status", "INTEGER"),
+    ("content_type", "TEXT"),
+    ("text_encoding", "TEXT"),
+    ("raw_bytes", "INTEGER CHECK(raw_bytes IS NULL OR raw_bytes>=0)"),
+    ("validation_status", "TEXT NOT NULL DEFAULT 'legacy_unverified' "
+                          "CHECK(validation_status IN ('legacy_unverified','pending','valid','invalid'))"),
+]
+
+# statement_observation 的 v4 增列（旧行 row_index 全部 NULL，不去重删历史）
+V4_STATEMENT_OBSERVATION_COLUMNS = [
+    ("row_index", "INTEGER CHECK(row_index IS NULL OR row_index>=0)"),
+    ("entry_time", "TEXT"),
+    ("normalization_diagnostics", "TEXT"),
+]
+
+V4_INDEXES = [
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_raw_snapshot_attempt ON raw_snapshot(attempt_id) "
+    "WHERE attempt_id IS NOT NULL;",
+    "CREATE INDEX IF NOT EXISTS ix_ingest_unit_run_status ON ingest_unit(run_id,status);",
+    "CREATE INDEX IF NOT EXISTS ix_ingest_attempt_unit ON ingest_attempt(unit_id,page_number,http_attempt);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_observation_source_row "
+    "ON statement_observation(snapshot_id,row_index) "
+    "WHERE snapshot_id IS NOT NULL AND row_index IS NOT NULL;",
+]
+
 # 更新 ALL_DDL（按依赖顺序，供 migrate_v1_baseline 使用）
 ALL_DDL = [
     DDL_STOCK_LIST,

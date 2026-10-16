@@ -60,13 +60,20 @@ def _apply_migration(conn: sqlite3.Connection, version: int, name: str, fn: Call
 
 
 def run_migrations(conn: sqlite3.Connection) -> None:
-    """运行所有未应用的迁移。"""
+    """运行所有未应用的迁移。
+
+    2B：迁移完成后，若库自称 v4 则校验必需表/列/索引齐全，
+    避免"版本号对但结构不完整"的库被静默接受。
+    """
     _ensure_schema_version_table(conn)
     current = _get_current_version(conn)
 
     for version, name, fn in MIGRATIONS:
         if version > current:
             _apply_migration(conn, version, name, fn)
+
+    if _get_current_version(conn) >= 4:
+        verify_v4_structure(conn)
 
 
 def migrate_v1_baseline(conn: sqlite3.Connection) -> None:
@@ -124,9 +131,7 @@ def migrate_v2_stage2(conn: sqlite3.Connection) -> None:
 
 def _ensure_column_exists(conn: sqlite3.Connection, table: str, column: str, dtype: str) -> None:
     """幂等添加列，已存在则跳过。"""
-    cur = conn.execute(f"PRAGMA table_info({table})")
-    columns = {row[1] for row in cur.fetchall()}
-    if column not in columns:
+    if not _column_exists(conn, table, column):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {dtype}")
 
 
@@ -207,6 +212,22 @@ def migrate_v3_rereview_fixes(conn: sqlite3.Connection) -> None:
         conn.execute(idx)
 
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """检查列是否存在（表不存在时返回 False）。"""
+    if not _table_exists(conn, table):
+        return False
+    cur = conn.execute(f"PRAGMA table_info({table})")
+    return column in {row[1] for row in cur.fetchall()}
+
+
+def _index_exists(conn: sqlite3.Connection, index: str) -> bool:
+    """检查索引是否存在。"""
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name=?", (index,)
+    )
+    return cur.fetchone() is not None
+
+
 def _add_features_columns(conn: sqlite3.Connection) -> None:
     """features 表加 6 列（幂等）。"""
     columns_to_add = [
@@ -222,6 +243,178 @@ def _add_features_columns(conn: sqlite3.Connection) -> None:
 
 
 MIGRATION_AMBIGUITY_PREFIX = "迁移投影："
+
+
+# 契约依据：docs/stage-2/2b-schema.md。
+# v4 必须在"已发布 v3"之上做增量建表/加列/建索引，不重写 v1/v2/v3 的 DDL 或数据含义，
+# 也不把 v4 对象塞进 ALL_DDL（否则空库会由 v1 提前创建 v4 结构）。
+V4_REQUIRED_TABLES = ("ingest_unit", "ingest_attempt", "raw_snapshot", "statement_observation")
+V4_REQUIRED_INDEXES = (
+    "uq_raw_snapshot_attempt",
+    "ix_ingest_unit_run_status",
+    "ix_ingest_attempt_unit",
+    "uq_observation_source_row",
+)
+
+
+def migrate_v4_ingestion_evidence(conn: sqlite3.Connection) -> None:
+    """v4 采集证据迁移：新增 ingest_unit / ingest_attempt，扩展 raw_snapshot 与观察表。
+
+    增量、幂等、可重试：
+    - 新表 CREATE TABLE IF NOT EXISTS
+    - 新增列先查 PRAGMA（故障回滚后重试不会重复 ALTER）
+    - 索引 IF NOT EXISTS
+    - 旧行不被删除或改写：raw_snapshot 旧行落 legacy-unverified，
+      statement_observation 旧行 row_index 保持 NULL
+    - 不在迁移函数中 executescript（避免隐式提交打断事务）
+    """
+    from fin_feature.storage.schema import (
+        DDL_INGEST_ATTEMPT,
+        DDL_INGEST_UNIT,
+        V4_INDEXES,
+        V4_RAW_SNAPSHOT_COLUMNS,
+        V4_STATEMENT_OBSERVATION_COLUMNS,
+    )
+
+    # 1. 新表（依赖 ingest_run，须在已发布的 v3 结构之后）
+    conn.execute(DDL_INGEST_UNIT)
+    conn.execute(DDL_INGEST_ATTEMPT)
+
+    # 2. raw_snapshot 增列（旧行默认 legacy-unverified / legacy_unverified）
+    for column, spec in V4_RAW_SNAPSHOT_COLUMNS:
+        _ensure_column_exists(conn, "raw_snapshot", column, spec)
+
+    # 3. statement_observation 增列（旧行 row_index / entry_time 保持 NULL）
+    for column, spec in V4_STATEMENT_OBSERVATION_COLUMNS:
+        _ensure_column_exists(conn, "statement_observation", column, spec)
+
+    # 4. 索引
+    for idx in V4_INDEXES:
+        conn.execute(idx)
+
+
+def collect_v4_structure_gaps(conn: sqlite3.Connection) -> list[str]:
+    """列出 v4 必需结构的缺失项（只读，不修改库）。"""
+    from fin_feature.storage.schema import (
+        V4_RAW_SNAPSHOT_COLUMNS,
+        V4_STATEMENT_OBSERVATION_COLUMNS,
+    )
+
+    gaps: list[str] = []
+    for table in V4_REQUIRED_TABLES:
+        if not _table_exists(conn, table):
+            gaps.append(f"缺少表 {table}")
+    for column, _spec in V4_RAW_SNAPSHOT_COLUMNS:
+        if not _column_exists(conn, "raw_snapshot", column):
+            gaps.append(f"缺少列 raw_snapshot.{column}")
+    for column, _spec in V4_STATEMENT_OBSERVATION_COLUMNS:
+        if not _column_exists(conn, "statement_observation", column):
+            gaps.append(f"缺少列 statement_observation.{column}")
+    for index in V4_REQUIRED_INDEXES:
+        if not _index_exists(conn, index):
+            gaps.append(f"缺少索引 {index}")
+    return gaps
+
+
+def verify_v4_structure(conn: sqlite3.Connection) -> None:
+    """版本自称 v4 却缺必需表/列/索引时明确拒绝，不静默接受不完整库。"""
+    gaps = collect_v4_structure_gaps(conn)
+    if gaps:
+        raise RuntimeError(
+            "数据库声明为 v4 但结构不完整，拒绝在缺失结构上继续运行："
+            + "；".join(gaps)
+        )
+
+
+def backup_database_for_migration(conn: sqlite3.Connection, target_path):
+    """用 SQLite backup API 生成一致性副本（含 WAL 已提交内容）。
+
+    契约要求：
+    - 真实已有库升级前先生成副本；失败即停止迁移
+    - 唯一新文件且不覆盖既有文件（目标已存在直接拒绝）
+    - 失败时清理本次未完成的副本，原库与既有文件不受影响
+    """
+    import sqlite3 as _sqlite3
+    from pathlib import Path as _Path
+
+    target = _Path(target_path)
+    if target.exists():
+        raise RuntimeError(f"备份目标已存在，拒绝覆盖：{target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    dest = _sqlite3.connect(str(target))
+    try:
+        conn.backup(dest)
+        dest.commit()
+    except Exception:
+        dest.close()
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        try:
+            dest.close()
+        except Exception:
+            pass
+    return target
+
+
+# 已有数据的表：任一非空即视为"已有库"，升级前必须先备份
+_BACKUP_SENSITIVE_TABLES = (
+    "stock_list",
+    "raw_financial_indicator",
+    "raw_income_statement",
+    "raw_balance_sheet",
+    "clean_financial_indicator",
+    "clean_income_statement",
+    "clean_balance_sheet",
+    "features",
+    "ingest_run",
+    "raw_snapshot",
+    "statement_version",
+    "statement_observation",
+)
+
+
+def _database_has_existing_data(conn: sqlite3.Connection) -> bool:
+    """只读判断库内是否已有受保护数据（决定升级前是否需要备份）。"""
+    for table in _BACKUP_SENSITIVE_TABLES:
+        if not _table_exists(conn, table):
+            continue
+        if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
+            return True
+    return False
+
+
+def default_backup_path(db_path, *, when=None):
+    """生成唯一的新备份文件名（``<db>.backup-<UTC 时间戳>[-n]``），绝不指向既有文件。"""
+    from datetime import datetime, timezone
+    from pathlib import Path as _Path
+
+    base = _Path(db_path)
+    stamp = (when or datetime.now(timezone.utc)).strftime("%Y%m%d-%H%M%S")
+    candidate = base.with_name(f"{base.name}.backup-{stamp}")
+    suffix = 1
+    while candidate.exists():
+        candidate = base.with_name(f"{base.name}.backup-{stamp}-{suffix}")
+        suffix += 1
+    return candidate
+
+
+def migrate_with_backup(conn: sqlite3.Connection, db_path, *, backup_path=None):
+    """已有库升级入口：先做一致性副本，再迁移；备份失败即停止，不执行任何迁移。
+
+    返回实际写入的备份路径；空库（无版本记录且无数据）直接迁移并返回 None。
+    目标文件与既有备份不覆盖：显式目标已存在时拒绝，自动命名保证唯一。
+    """
+    needs_backup = _get_current_version(conn) > 0 or _database_has_existing_data(conn)
+    if not needs_backup:
+        run_migrations(conn)
+        return None
+
+    target = backup_path if backup_path is not None else default_backup_path(db_path)
+    backup_database_for_migration(conn, target)  # 失败即抛出，迁移不执行
+    run_migrations(conn)
+    return target
 
 
 def _log_migration_ambiguity(
@@ -522,4 +715,5 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (1, "v1_baseline", migrate_v1_baseline),
     (2, "v2_stage2", migrate_v2_stage2),
     (3, "v3_rereview_fixes", migrate_v3_rereview_fixes),
+    (4, "v4_ingestion_evidence", migrate_v4_ingestion_evidence),
 ]

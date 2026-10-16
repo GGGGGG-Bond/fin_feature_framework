@@ -21,7 +21,10 @@ _DEFAULTS: dict[str, Any] = {
         "user_agent": "Mozilla/5.0",
         "referer": "https://data.eastmoney.com/",
     },
-    "crawl": {"stock_count": 50, "recent_periods": 4},
+    "crawl": {"stock_count": 50, "recent_periods": 4, "max_pages_per_unit": 1000},
+    # 2B：原始证据存储。root 省略时取"已解析 DB 文件所在目录/raw"；
+    # max_body_bytes 对留存与对账解压施加边界。
+    "raw_store": {"root": None, "max_body_bytes": 32 * 1024 * 1024},
     "cleaning": {"outlier_thresholds": {}, "missing_strategy": {"default": "keep"}},
     "features": {"groups": ["profitability", "growth", "solvency"]},
     "backtest": {"n_groups": 5, "return_proxy": "next_profit_yoy"},
@@ -66,6 +69,10 @@ class Config:
     @property
     def crawl(self) -> dict:
         return self.get("crawl", default={})
+
+    @property
+    def raw_store(self) -> dict:
+        return self.get("raw_store", default={})
 
     @property
     def cleaning(self) -> dict:
