@@ -1087,3 +1087,325 @@ class TestA6NumericNormalization:
             (vid,),
         ).fetchone()
         assert json.loads(row["standardized_fields"])["weightavg_roe"] == 0.1675
+
+
+# ===========================================================================
+# B1: 迁移当前投影与阶段一选值规则对齐
+# ===========================================================================
+
+@pytest.fixture
+def stage1_db_factory():
+    """构造阶段一形状的库（v1 基线 + raw_* 数据），迁移尚未运行。
+
+    返回工厂函数：f(rows_by_table) -> (conn, db_path)。
+    测试结束后统一关闭连接并删除临时文件。
+    """
+    created = []
+
+    def _make(rows_by_table):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        conn = get_connection(db_path)
+        m.migrate_v1_baseline(conn)
+        for table, rows in rows_by_table.items():
+            for row in rows:
+                cols = ", ".join(row.keys())
+                placeholders = ", ".join(["?"] * len(row))
+                conn.execute(
+                    f"INSERT INTO {table} ({cols}) VALUES ({placeholders})",
+                    tuple(row.values()),
+                )
+        conn.commit()
+        created.append((conn, db_path))
+        return conn, db_path
+
+    yield _make
+
+    for conn, db_path in created:
+        conn.close()
+        Path(db_path).unlink(missing_ok=True)
+
+
+def _raw_count(conn, table):
+    return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+
+def _stage1_selected(conn, raw_table, table_suffix, secucode, report_date):
+    """真实调用阶段一已验收方法 deduplicate，返回该组的选中记录。"""
+    from fin_feature.cleaning.dedup import deduplicate
+
+    rows = conn.execute(f"SELECT * FROM {raw_table}").fetchall()
+    result = deduplicate(Repository(conn), table_suffix, rows)
+    chosen = [
+        dict(r) for r in result
+        if r["secucode"] == secucode and r["report_date"] == report_date
+    ]
+    assert len(chosen) == 1, f"阶段一应恰好选中一条，实际 {len(chosen)}"
+    return chosen[0]
+
+
+def _current_rows(conn, secucode, report_date, table_type):
+    """取组内当前投影行（不设空条件跳过，断言组存在）。"""
+    rows = conn.execute(
+        """
+        SELECT * FROM statement_version
+        WHERE secucode = ? AND report_date = ? AND table_type = ?
+        """,
+        (secucode, report_date, table_type),
+    ).fetchall()
+    assert rows, f"组 ({secucode}, {report_date}, {table_type}) 应有迁移记录"
+    current = [r for r in rows if r["is_superseded"] == 0]
+    assert len(current) == 1, f"当前投影应恰好一条，实际 {len(current)}"
+    return rows, current[0]
+
+
+def _raw_value(row, field):
+    return json.loads(row["raw_fields"]).get(field)
+
+
+# 反例 1：未知公告日的记录采集更晚
+COUNTEREXAMPLE_1 = [
+    {"secucode": "000001.SZ", "security_code": "000001", "report_date": "2024-03-31",
+     "notice_date": "2024-04-15", "entry_time": None, "crawled_at": "2024-05-20 10:00:00",
+     "total_operate_income": 120.0},
+    {"secucode": "000001.SZ", "security_code": "000001", "report_date": "2024-03-31",
+     "notice_date": None, "entry_time": None, "crawled_at": "2024-06-20 10:00:00",
+     "total_operate_income": 100.0},
+]
+
+# 反例 2：双方公告日未知，entry_time 与采集先后相反
+COUNTEREXAMPLE_2 = [
+    {"secucode": "000002.SZ", "security_code": "000002", "report_date": "2024-03-31",
+     "notice_date": None, "entry_time": "2024-06-01 09:00:00",
+     "crawled_at": "2024-04-20 10:00:00", "total_operate_income": 120.0},
+    {"secucode": "000002.SZ", "security_code": "000002", "report_date": "2024-03-31",
+     "notice_date": None, "entry_time": "2024-05-01 09:00:00",
+     "crawled_at": "2024-06-30 10:00:00", "total_operate_income": 100.0},
+]
+
+
+class TestB1MigrationSelectionAlignment:
+    """B1 修复：迁移当前投影读完整元信息（含 entry_time），复用阶段一选值规则。
+
+    覆盖复审给出的两条真实方法反例，以及当前唯一性、历史保留、重跑幂等、
+    歧义保留和插入顺序无关性。
+    """
+
+    def test_known_notice_not_superseded_by_unknown_notice_crawl_time(
+        self, stage1_db_factory
+    ):
+        """反例 1：已发布公告的 120 不再被未知公告日、采集更晚的 100 顶替。
+
+        旧投影用 COALESCE(notice_date, crawled_at) 排序：未知公告日的记录
+        会因采集时间更晚而获得公告优先级。修复后未知公告不得借采集时间取胜。
+        """
+        conn, _ = stage1_db_factory({"raw_financial_indicator": COUNTEREXAMPLE_1})
+
+        # 反例前提：未知公告日那条采集更晚（旧代码会因此选中它）
+        known, unknown = COUNTEREXAMPLE_1
+        assert unknown["crawled_at"] > known["crawled_at"]
+        assert unknown["notice_date"] is None
+
+        stage1 = _stage1_selected(
+            conn, "raw_financial_indicator", "financial_indicator", "000001.SZ", "2024-03-31"
+        )
+        assert stage1["total_operate_income"] == 120.0, "阶段一应选已知公告日的 120"
+
+        run_migrations(conn)
+
+        rows, current = _current_rows(conn, "000001.SZ", "2024-03-31", "financial_indicator")
+        assert len(rows) == 2, "两条历史记录都应保留"
+        assert _raw_value(current, "total_operate_income") == 120.0
+        assert _raw_value(current, "total_operate_income") == stage1["total_operate_income"]
+        assert current["notice_date"] == "2024-04-15"
+
+        superseded = [r for r in rows if r["is_superseded"] == 1]
+        assert len(superseded) == 1
+        assert _raw_value(superseded[0], "total_operate_income") == 100.0
+
+    def test_unknown_notice_uses_entry_time_not_crawl_order(self, stage1_db_factory):
+        """反例 2：双方公告日未知时按 entry_time 选值，不按采集先后。"""
+        conn, _ = stage1_db_factory({"raw_financial_indicator": COUNTEREXAMPLE_2})
+
+        later_crawled = max(COUNTEREXAMPLE_2, key=lambda r: r["crawled_at"])
+        assert later_crawled["total_operate_income"] == 100.0, "采集更晚的是 100"
+        latest_entry = max(COUNTEREXAMPLE_2, key=lambda r: r["entry_time"])
+        assert latest_entry["total_operate_income"] == 120.0, "entry_time 更晚的是 120"
+
+        stage1 = _stage1_selected(
+            conn, "raw_financial_indicator", "financial_indicator", "000002.SZ", "2024-03-31"
+        )
+        assert stage1["total_operate_income"] == 120.0
+
+        run_migrations(conn)
+
+        rows, current = _current_rows(conn, "000002.SZ", "2024-03-31", "financial_indicator")
+        assert len(rows) == 2
+        assert _raw_value(current, "total_operate_income") == 120.0
+        assert _raw_value(current, "total_operate_income") == stage1["total_operate_income"]
+        # 不制造日期证据：公告日未知保持 NULL，不借用采集时间补齐
+        assert all(r["notice_date"] is None for r in rows)
+
+    def test_both_unknown_uses_deterministic_fallback_and_keeps_ambiguity(
+        self, stage1_db_factory
+    ):
+        """公告日与 entry_time 都未知：按内容摘要确定性回退，并保留歧义记录。"""
+        rows_in = [
+            {"secucode": "000001.SZ", "security_code": "000001", "report_date": "2024-03-31",
+             "notice_date": None, "entry_time": None, "crawled_at": "2024-06-30 10:00:00",
+             "total_operate_income": 100.0},
+            {"secucode": "000001.SZ", "security_code": "000001", "report_date": "2024-03-31",
+             "notice_date": None, "entry_time": None, "crawled_at": "2024-04-20 10:00:00",
+             "total_operate_income": 120.0},
+        ]
+        conn, _ = stage1_db_factory({"raw_financial_indicator": rows_in})
+
+        stage1 = _stage1_selected(
+            conn, "raw_financial_indicator", "financial_indicator", "000001.SZ", "2024-03-31"
+        )
+
+        run_migrations(conn)
+
+        rows, current = _current_rows(conn, "000001.SZ", "2024-03-31", "financial_indicator")
+        assert len(rows) == 2
+        assert _raw_value(current, "total_operate_income") == stage1["total_operate_income"]
+
+        # 每次观察时间取自该系统实际的采集时间，不冒充公告时间
+        observed = sorted(r["observed_at"] for r in rows)
+        assert observed == ["2024-04-20 10:00:00", "2024-06-30 10:00:00"]
+        assert all(r["notice_date"] is None for r in rows)
+
+        # 保留歧义：既不声称恢复真实修订先后，也不静默丢弃
+        logs = conn.execute(
+            "SELECT detail FROM clean_log WHERE action = 'dedup_ambiguous' "
+            "AND detail LIKE ?",
+            (f"{m.MIGRATION_AMBIGUITY_PREFIX}%",),
+        ).fetchall()
+        assert len(logs) == 1, "应保留一条迁移投影歧义记录"
+        assert "不声称恢复真实修订先后" in logs[0][0]
+
+    def test_selection_independent_of_insertion_order(self, stage1_db_factory):
+        """同一分组两行内容不同时，投影结果与插入顺序无关。"""
+        forward = stage1_db_factory({"raw_financial_indicator": COUNTEREXAMPLE_2})
+        reversed_rows = list(reversed(COUNTEREXAMPLE_2))
+        backward = stage1_db_factory({"raw_financial_indicator": reversed_rows})
+
+        chosen = []
+        for conn, _ in (forward, backward):
+            run_migrations(conn)
+            _, current = _current_rows(conn, "000002.SZ", "2024-03-31", "financial_indicator")
+            chosen.append(_raw_value(current, "total_operate_income"))
+        assert chosen[0] == chosen[1] == 120.0
+
+    def test_current_projection_preserves_history_and_matches_stage1(
+        self, stage1_db_factory
+    ):
+        """混合数据集：当前金额与阶段一一致、当前唯一、全部历史保留。"""
+        fi_rows = COUNTEREXAMPLE_1 + COUNTEREXAMPLE_2 + [
+            # 三次正常修订：按公告日选取最后一条
+            {"secucode": "000003.SZ", "security_code": "000003", "report_date": "2024-06-30",
+             "notice_date": "2024-07-15", "entry_time": None, "crawled_at": "2024-07-16 10:00:00",
+             "total_operate_income": 10.0},
+            {"secucode": "000003.SZ", "security_code": "000003", "report_date": "2024-06-30",
+             "notice_date": "2024-08-15", "entry_time": None, "crawled_at": "2024-07-17 10:00:00",
+             "total_operate_income": 30.0},
+            {"secucode": "000003.SZ", "security_code": "000003", "report_date": "2024-06-30",
+             "notice_date": "2024-07-20", "entry_time": None, "crawled_at": "2024-07-18 10:00:00",
+             "total_operate_income": 20.0},
+        ]
+        bs_rows = [
+            # 同一天、同 entry_time、公告日均未知（raw_* 主键含 notice_date，
+            # 同日非空公告日的重复行由原始层主键阻止，这里用真实可存的形态）：
+            # 按内容摘要选取并标歧义
+            {"secucode": "000001.SZ", "security_code": "000001", "report_date": "2024-03-31",
+             "notice_date": None, "entry_time": "2024-04-30 12:00:00",
+             "crawled_at": "2024-05-01 10:00:00", "total_assets": 1000.0},
+            {"secucode": "000001.SZ", "security_code": "000001", "report_date": "2024-03-31",
+             "notice_date": None, "entry_time": "2024-04-30 12:00:00",
+             "crawled_at": "2024-05-02 10:00:00", "total_assets": 1200.0},
+        ]
+        raw_counts = {
+            "raw_financial_indicator": len(fi_rows),
+            "raw_balance_sheet": len(bs_rows),
+        }
+        conn, _ = stage1_db_factory({
+            "raw_financial_indicator": fi_rows,
+            "raw_balance_sheet": bs_rows,
+        })
+
+        # 迁移前的当前值：真实调用阶段一方法
+        stage1_fi = {}
+        for secucode, report_date in [("000001.SZ", "2024-03-31"), ("000002.SZ", "2024-03-31"),
+                                      ("000003.SZ", "2024-06-30")]:
+            stage1_fi[(secucode, report_date)] = _stage1_selected(
+                conn, "raw_financial_indicator", "financial_indicator", secucode, report_date
+            )["total_operate_income"]
+        stage1_bs = _stage1_selected(
+            conn, "raw_balance_sheet", "balance_sheet", "000001.SZ", "2024-03-31"
+        )["total_assets"]
+
+        run_migrations(conn)
+
+        # 1) 全部历史记录保留（raw_* 不删除，且 1:1 投影）
+        for table, expected in raw_counts.items():
+            assert _raw_count(conn, table) == expected, f"{table} 原始记录不应被删除"
+        sv_count = conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0]
+        assert sv_count == sum(raw_counts.values()), "statement_version 应 1:1 保留全部历史"
+
+        # 2) 当前金额与阶段一选值一致
+        for (secucode, report_date), expected in stage1_fi.items():
+            _, current = _current_rows(conn, secucode, report_date, "financial_indicator")
+            assert _raw_value(current, "total_operate_income") == expected
+        _, current_bs = _current_rows(conn, "000001.SZ", "2024-03-31", "balance_sheet")
+        assert _raw_value(current_bs, "total_assets") == stage1_bs
+        assert _raw_value(current_bs, "total_assets") == 1200.0, "阶段一按内容摘要选中 1200"
+
+        # 3) 当前唯一性：每组恰好一条 is_superseded=0（不设空条件跳过）
+        groups = conn.execute("""
+            SELECT secucode, report_date, table_type, source_name,
+                   SUM(CASE WHEN is_superseded = 0 THEN 1 ELSE 0 END) AS current_count
+            FROM statement_version
+            GROUP BY secucode, report_date, table_type, source_name
+        """).fetchall()
+        assert len(groups) == 4, "应有 4 个分组：3 个 FI + 1 个 BS"
+        assert all(g["current_count"] == 1 for g in groups)
+
+        # 4) 迁移验证指标与事实一致
+        metrics = m.verify_migration(conn)
+        assert metrics["sv_count"] == sv_count
+        assert metrics["sv_current_count"] == 4
+        assert metrics["sv_groups_not_single_current"] == 0
+        assert metrics["migration_ambiguous_selections"] == 1  # BS 组同日同 entry_time
+
+    def test_rerun_migrations_is_idempotent(self, stage1_db_factory):
+        """重跑迁移不新增、不改写既有投影（幂等）。"""
+        rows = COUNTEREXAMPLE_1 + COUNTEREXAMPLE_2
+        conn, _ = stage1_db_factory({"raw_financial_indicator": rows})
+
+        run_migrations(conn)
+        snapshot_sql = """
+            SELECT version_id, observation_seq, is_superseded, notice_date,
+                   observed_at, raw_fields
+            FROM statement_version ORDER BY version_id
+        """
+        before = [tuple(r) for r in conn.execute(snapshot_sql).fetchall()]
+        ambiguity_before = conn.execute(
+            "SELECT COUNT(*) FROM clean_log WHERE detail LIKE ?",
+            (f"{m.MIGRATION_AMBIGUITY_PREFIX}%",),
+        ).fetchone()[0]
+        raw_before = _raw_count(conn, "raw_financial_indicator")
+
+        run_migrations(conn)
+
+        after = [tuple(r) for r in conn.execute(snapshot_sql).fetchall()]
+        assert after == before, "重跑迁移不应改变或新增投影"
+        assert _raw_count(conn, "raw_financial_indicator") == raw_before
+        ambiguity_after = conn.execute(
+            "SELECT COUNT(*) FROM clean_log WHERE detail LIKE ?",
+            (f"{m.MIGRATION_AMBIGUITY_PREFIX}%",),
+        ).fetchone()[0]
+        assert ambiguity_after == ambiguity_before
+
+        # 当前金额不变，仍与阶段一一致
+        _, current = _current_rows(conn, "000001.SZ", "2024-03-31", "financial_indicator")
+        assert _raw_value(current, "total_operate_income") == 120.0

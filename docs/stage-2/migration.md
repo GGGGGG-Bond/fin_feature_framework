@@ -67,14 +67,29 @@ def _apply_migration(conn, version, name, fn):
 
 - `evidence_sufficient=0`（无原始响应，不编造）
 - `snapshot_id=NULL`、`run_id=NULL`（不编造采集批次）
-- `observed_at` 用 crawled_at（若为 NULL 则用迁移时间）
+- `observed_at` 用 crawled_at（若为 NULL 则用迁移时间）——这是**系统观察时间**，不是公告或修订时间
 - `currency=unknown`（R4-a 修复：不推断 CNY，哈希与 INSERT 使用同一值）
 - `metric_hash`/`semantic_hash` 用 `hashing.py` 统一计算
 - **A6 修复**：标准化字段经 `normalize_numeric` 统一数值表示后再计算哈希与存储，与运行时 `create_statement_version` 共用同一处理
-- `observation_seq` 按 (secucode, report_date, table_type, source_name) 分组，按 notice_date, crawled_at, rowid 排序自增
-- `is_superseded`：同组内仅最新为 0，其余为 1
 - `revision_type`：统一标 unknown
 - **迁移是复制不是移动**：旧 raw_* 表数据保留不删除
+
+## 当前投影选值（B1 修复）
+
+旧投影用 `ORDER BY COALESCE(notice_date, crawled_at, 迁移时间), crawled_at, rowid`，既没有读取 `entry_time`，又让未知公告日的记录凭采集时间获得公告优先级，与阶段一已验收的选值规则分歧，会静默改变当前有效版本。
+
+修复后：
+
+- `SELECT *` 读取完整旧来源元信息（含 `entry_time`）并消费；
+- 分组键与阶段一同口径：`report_date` 经 `normalize_date` 规范化后分组（无法解析时保留原值，不丢弃历史记录）；
+- 当前投影**复用阶段一同一函数** `fin_feature.cleaning.dedup.sort_key`（`notice_date` → `entry_time` → 内容摘要），不维护第二套排序；
+- `observation_seq` 是组内按该规则的**升序位置**，序号最大者为当前投影；它是确定性的排序位置，**不代表已证实的公告或修订先后**；
+- `is_superseded`：同组内仅被选中的最后一条为 0，其余为 1；
+- `notice_date` 存规范化后的原始公告日，未知保持 NULL，**不用采集时间补齐，不制造日期证据**（原值仍留在 raw_* 表）；
+- 并列歧义（同日同 `entry_time`，或同日均无 `entry_time`）按内容摘要确定性选取，并以 `dedup_ambiguous` 动作记入 `clean_log`（detail 前缀 `迁移投影：`，与阶段一自身写下的同名日志区分），保留歧义而不声称恢复真实先后；
+- SQL 的 `ORDER BY ... rowid` 只给同一 DB 上完全并列（含内容摘要并列）的行一个可复现的物理顺序，不参与选值判断。
+
+**存量影响**：旧投影只存在于未发布的本地草稿库（2A 尚未合入 main，无已发布库）。修正后从阶段一副本重跑迁移即可；不提供就地重投影，也不修改已迁移库的既有行。
 
 ## R4-b 修复：统一标准化入口
 
@@ -93,8 +108,11 @@ def _apply_migration(conn, version, name, fn):
 - sv_count：statement_version 记录数
 - sv_evidence_insufficient：evidence_sufficient=0 的记录数
 - sv_superseded：is_superseded=1 的记录数
+- sv_current_count：is_superseded=0 的当前投影条数（B1）
+- sv_groups_not_single_current：当前投影不唯一的组数，应为 0（B1）
+- migration_ambiguous_selections：迁移投影保留的并列歧义条数（B1）
 - schema_version：当前迁移版本
 - raw_counts_by_table：各 raw_* 表记录数
 - sv_counts_by_type：各 table_type 记录数
 
-测试断言：迁移数据全部 evidence_sufficient=0、旧表记录数不变、哈希可从存储字段重算。
+测试断言：迁移数据全部 evidence_sufficient=0、旧表记录数不变、哈希可从存储字段重算、当前投影与阶段一选值一致且每组唯一、全部历史记录保留、重跑幂等。

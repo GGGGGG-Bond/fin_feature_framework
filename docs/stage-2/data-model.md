@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS statement_version (
 
 **R5 修复**：`evidence_sufficient` 默认 0（非 1），CHECK 约束确保声明充分时必须有 snapshot_id。
 **R6/A5 修复**：CHECK 约束确保 metric_hash/semantic_hash 为 64 字符十六进制。`NOT GLOB '*[^0-9a-f]*'` 校验全串（`GLOB '[0-9a-f]*'` 只约束首字符，`*` 匹配任意后续字符）。
+**B1 修复**：旧数据迁移写入的 `observation_seq`/`is_superseded` 表示按阶段一选值规则排序的位置（序号最大者为当前投影），不代表已证实的公告/修订先后；`observed_at` 为该记录的系统观察时间。选值与歧义处理见 [迁移规范](migration.md)。
 
 ### 5. statement_observation（观察关系 — R3/A3 修复）
 

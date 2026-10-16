@@ -221,6 +221,55 @@ def _add_features_columns(conn: sqlite3.Connection) -> None:
         _ensure_column_exists(conn, "features", column, dtype)
 
 
+MIGRATION_AMBIGUITY_PREFIX = "迁移投影："
+
+
+def _log_migration_ambiguity(
+    conn: sqlite3.Connection,
+    raw_table: str,
+    secucode: str,
+    report_date: str,
+    ordered: list[dict],
+) -> None:
+    """记录迁移投影中的并列歧义（B1）。
+
+    与阶段一 `deduplicate` 判断同口径：组内最新两条在 (notice_date, entry_time)
+    上并列时（同日同 entry_time，或同日均无 entry_time），按内容摘要确定性选取，
+    并写入与阶段一同名的 `dedup_ambiguous` 日志保留歧义，不声称恢复真实
+    公告/修订先后。detail 前缀用于区分阶段一自身写下的同名日志。
+    """
+    if len(ordered) < 2 or not _table_exists(conn, "clean_log"):
+        return
+
+    chosen, prev = ordered[-1], ordered[-2]
+    chosen_date = chosen.get("notice_date") or ""
+    prev_date = prev.get("notice_date") or ""
+    if chosen_date != prev_date:
+        return
+
+    chosen_entry = chosen.get("entry_time") or ""
+    prev_entry = prev.get("entry_time") or ""
+    if chosen_entry and chosen_entry != prev_entry:
+        return
+
+    if chosen_entry:
+        detail = (
+            f"{MIGRATION_AMBIGUITY_PREFIX}同日同 entry_time={chosen_entry} 多版本，"
+            "按内容摘要选取，不声称恢复真实修订先后"
+        )
+    else:
+        detail = (
+            f"{MIGRATION_AMBIGUITY_PREFIX}同日 notice_date={chosen_date} 无 entry_time，"
+            "按内容摘要选取，不声称恢复真实修订先后"
+        )
+
+    conn.execute(
+        "INSERT INTO clean_log (secucode, report_date, source_table, action, detail) "
+        "VALUES (?, ?, ?, 'dedup_ambiguous', ?)",
+        (secucode, report_date, raw_table, detail),
+    )
+
+
 def _migrate_raw_to_statement_version(conn: sqlite3.Connection) -> None:
     """旧 raw_* 数据迁移到 statement_version。
 
@@ -228,22 +277,35 @@ def _migrate_raw_to_statement_version(conn: sqlite3.Connection) -> None:
     保留有限数检查与非法输入处理；currency 统一标 unknown（不推断 CNY），
     哈希与 INSERT 使用同一规范化对象，避免两套字面值漂移。
 
-    约束：
+    B1 修复：读取完整旧来源元信息（含 entry_time），当前投影复用阶段一已验收的
+    选值规则 `fin_feature.cleaning.dedup.sort_key`（notice_date → entry_time →
+    内容摘要），不再用 `COALESCE(notice_date, crawled_at)` 排序——未知公告日不能
+    借采集时间获得公告优先级。
+
+    投影语义（B1：排序含义必须明确，不声称恢复真实先后）：
     - evidence_sufficient=0（无原始响应，不编造）
     - snapshot_id=NULL、run_id=NULL（不编造采集批次）
-    - observed_at 用 crawled_at（若为 NULL 则用迁移时间）
-    - metric_hash/semantic_hash 用 hashing 模块统一计算
-    - observation_seq 按 (secucode, report_date, table_type, source_name) 分组排序
-    - is_superseded：同组内仅最新为 0，其余为 1
+    - observed_at 用 crawled_at（若为 NULL 则用迁移时间）：这是**系统观察时间**，
+      不是公告或修订时间
+    - notice_date 用规范化后的原始公告日；未知保持 NULL，不用采集时间补齐，
+      也不制造日期证据（原值仍保留在 raw_* 表）
+    - observation_seq 是组内按阶段一选值规则的**升序位置**，序号最大者为当前投影；
+      它是确定性的排序位置，**不代表已证实的公告或修订先后**
+    - is_superseded：同组内仅选中的最后一条为 0，其余为 1
+    - 并列歧义（同为同日同 entry_time，或同日均无 entry_time）按内容摘要确定性
+      选取，并以 `dedup_ambiguous` 记入 clean_log 保留歧义
     - revision_type：统一标 unknown（不编造修订类型）
-    - 旧 raw_* 表数据保留不删除（复制不是移动）
+    - metric_hash/semantic_hash 用 hashing 模块统一计算
+    - 旧 raw_* 表数据保留不删除（复制不是移动）；无法解析报告期的记录保留原值，
+      不因规范化失败被丢弃
     """
-    import json
     from datetime import datetime
 
     # R4-b 修复：使用统一标准化入口，传入固定 unit_map（不受运行时 _unit_overrides 污染）
+    from fin_feature.cleaning.dedup import sort_key as stage1_sort_key
     from fin_feature.features.standardize import standardize_record, FIELD_UNITS
     from fin_feature.storage.hashing import compute_metric_hash, compute_semantic_hash, canonical_json, normalize_numeric
+    from fin_feature.utils.date_utils import normalize_date
 
     migration_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -266,37 +328,41 @@ def _migrate_raw_to_statement_version(conn: sqlite3.Connection) -> None:
     ]
 
     for raw_table, table_type, fields in table_mappings:
-        # 按分组排序，生成 observation_seq
-        query = f"""
-            SELECT
-                secucode, report_date, notice_date, crawled_at, rowid,
-                {', '.join(fields)}
-            FROM {raw_table}
-            ORDER BY secucode, report_date,
-                     COALESCE(notice_date, crawled_at, '{migration_time}'),
-                     crawled_at, rowid
-        """
-        cur = conn.execute(query)
+        # B1 修复：SELECT * 读取完整旧来源元信息（含 entry_time），
+        # 供阶段一选值规则消费。SQL 的 ORDER BY 只用于在同一 DB 上给
+        # 完全并列（含内容摘要并列）的行一个可复现的物理顺序，不参与选值判断。
+        order_columns = "secucode, report_date, notice_date, entry_time, rowid"
+        cur = conn.execute(f"SELECT * FROM {raw_table} ORDER BY {order_columns}")
 
-        # 分组内分配 observation_seq 和 is_superseded
-        groups = {}
+        # 分组键与阶段一同口径：规范化 report_date 后再分组
+        groups: dict[tuple, list[dict]] = {}
         for row in cur.fetchall():
-            secucode = row[0]
-            report_date = row[1]
+            record = dict(row)
+            secucode = record.get("secucode")
+            # 无法解析报告期时保留原值，只对齐可解析的规范化结果，不丢弃历史记录
+            report_date = normalize_date(record.get("report_date")) or record.get("report_date")
+            record["report_date"] = report_date
+            # 公告日规范化后再参与选值；未知保持 None，不借用采集时间补齐
+            record["notice_date"] = normalize_date(record.get("notice_date"))
             key = (secucode, report_date, table_type, "eastmoney")
-            if key not in groups:
-                groups[key] = []
-            groups[key].append(row)
+            groups.setdefault(key, []).append(record)
 
-        for key, rows in groups.items():
+        for key, records in groups.items():
             secucode, report_date, table_type, source_name = key
-            for seq, row in enumerate(rows, start=1):
-                notice_date = row[2]
-                crawled_at = row[3] or migration_time
-                field_values = row[5:]
+
+            # B1 修复：复用阶段一已验收的选值规则，不依赖输入顺序，
+            # 也不把采集先后当作已证实的公告或修订先后
+            ordered = sorted(records, key=stage1_sort_key)
+
+            # 元信息并列时保留歧义记录（与阶段一同口径、同日志动作）
+            _log_migration_ambiguity(conn, raw_table, secucode, report_date, ordered)
+
+            for seq, record in enumerate(ordered, start=1):
+                notice_date = record.get("notice_date")
+                crawled_at = record.get("crawled_at") or migration_time
 
                 # 构造原始记录（用于标准化）
-                raw_record = {f: field_values[i] for i, f in enumerate(fields) if field_values[i] is not None}
+                raw_record = {f: record.get(f) for f in fields if record.get(f) is not None}
 
                 # R4-b 修复：调用统一标准化入口，传入固定 unit_map
                 # 保留有限数检查（NaN/Inf → None + invalid_value）、布尔检查、未知单位处理
@@ -330,8 +396,8 @@ def _migrate_raw_to_statement_version(conn: sqlite3.Connection) -> None:
                     currency=currency,
                 )
 
-                # is_superseded：仅最新为 0
-                is_superseded = 0 if seq == len(rows) else 1
+                # is_superseded：仅组内按阶段一规则选中的最后一条为 0
+                is_superseded = 0 if seq == len(ordered) else 1
 
                 conn.execute("""
                     INSERT INTO statement_version (
@@ -376,6 +442,9 @@ def verify_migration(conn: sqlite3.Connection) -> dict:
     - sv_count: statement_version 记录数
     - sv_evidence_insufficient: evidence_sufficient=0 的记录数
     - sv_superseded: is_superseded=1 的记录数
+    - sv_current_count: is_superseded=0 的当前投影条数（B1）
+    - sv_groups_not_single_current: 当前投影不唯一的组数，应为 0（B1）
+    - migration_ambiguous_selections: 迁移投影保留的并列歧义条数（B1）
     - schema_version: 当前迁移版本
     - raw_counts_by_table: 各 raw_* 表记录数
     - sv_counts_by_type: 各 table_type 记录数
@@ -410,11 +479,38 @@ def verify_migration(conn: sqlite3.Connection) -> dict:
     for row in cur.fetchall():
         sv_by_type[row[0]] = row[1]
 
+    # B1 验证：当前投影条数，以及"每组当前唯一"成立与否（应为 0）
+    cur = conn.execute("SELECT COUNT(*) FROM statement_version WHERE is_superseded = 0")
+    sv_current_count = cur.fetchone()[0]
+
+    cur = conn.execute("""
+        SELECT COUNT(*) FROM (
+            SELECT secucode, report_date, table_type, source_name
+            FROM statement_version
+            GROUP BY secucode, report_date, table_type, source_name
+            HAVING SUM(CASE WHEN is_superseded = 0 THEN 1 ELSE 0 END) <> 1
+        )
+    """)
+    sv_groups_not_single_current = cur.fetchone()[0]
+
+    # B1 验证：迁移投影保留的并列歧义条数（不含阶段一自身写下的同名日志）
+    migration_ambiguous_selections = 0
+    if _table_exists(conn, "clean_log"):
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM clean_log "
+            "WHERE action = 'dedup_ambiguous' AND detail LIKE ?",
+            (f"{MIGRATION_AMBIGUITY_PREFIX}%",),
+        )
+        migration_ambiguous_selections = cur.fetchone()[0]
+
     return {
         "raw_count": sum(raw_counts.values()),
         "sv_count": sv_count,
         "sv_evidence_insufficient": sv_evidence_insufficient,
         "sv_superseded": sv_superseded,
+        "sv_current_count": sv_current_count,
+        "sv_groups_not_single_current": sv_groups_not_single_current,
+        "migration_ambiguous_selections": migration_ambiguous_selections,
         "schema_version": schema_version,
         "raw_counts_by_table": raw_counts,
         "sv_counts_by_type": sv_by_type,

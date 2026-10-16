@@ -1,6 +1,6 @@
 # 验收测试矩阵
 
-契约版本：stage2-v1。源码：`tests/test_migrations.py`、`tests/test_statement_version.py`、`tests/test_ingest_run.py`、`tests/test_compute_log.py`、`tests/test_stage2_rereview_fixes.py`。
+契约版本：stage2-v1。审阅基准：`5cf3fbb`。源码：`tests/test_migrations.py`、`tests/test_statement_version.py`、`tests/test_ingest_run.py`、`tests/test_compute_log.py`、`tests/test_stage2_rereview_fixes.py`。
 
 ## 验收标准与测试映射
 
@@ -27,9 +27,11 @@
 | test_raw_migrated_to_statement_version | T2-09 旧数据迁移 |
 | test_migration_evidence_sufficient_zero | 迁移数据 evidence_sufficient=0 |
 | test_migration_observation_seq_continuous | observation_seq 连续 |
-| test_migration_is_superseded_correct | is_superseded 分布 |
+| test_migration_is_superseded_correct | is_superseded 分布与当前选值（按阶段一公告日规则） |
 | test_verify_migration_returns_metrics | verify_migration 接口 |
-| test_verify_migration_sv_count_equals_raw_count | 迁移计数 |
+| test_verify_migration_sv_count_equals_raw_count | 迁移计数（sv_count == raw_count，当前唯一） |
+
+以上四项旧数据相关测试在修复后改为**先写入 raw_* 再迁移**（此前在迁移之后插入数据，断言被空条件跳过）。
 
 ### test_statement_version.py（8 项）
 
@@ -65,7 +67,7 @@
 | test_old_result_preserved_after_new_computation | 不可变记录 |
 | test_compute_log_not_computable | 不可计算原因 |
 
-### test_stage2_rereview_fixes.py（53 项 — R1-R7 + A1-A6 复审修复）
+### test_stage2_rereview_fixes.py（59 项 — R1-R7 + A1-A6 + B1 复审修复）
 
 | 测试类 | 测试数 | 覆盖 |
 |---|---|---|
@@ -82,6 +84,18 @@
 | TestA4RunConsistency | 4 | A4 快照/版本 run 一致、来源校验 |
 | TestA5HashGlobConstraint | 5 | A5 哈希 GLOB 全串校验 |
 | TestA6NumericNormalization | 5 | A6 int/float 同值不产生新版本 |
+| TestB1MigrationSelectionAlignment | 6 | B1 迁移当前投影与阶段一选值一致 |
+
+B1 测试清单（迁移前写入 raw_*，再运行迁移；断言不使用空条件跳过）：
+
+| 测试 | 覆盖 |
+|---|---|
+| test_known_notice_not_superseded_by_unknown_notice_crawl_time | 反例 1：已知公告日 120 不被未知公告日、采集更晚的 100 顶替 |
+| test_unknown_notice_uses_entry_time_not_crawl_order | 反例 2：双方公告日未知时按 entry_time 选值，且公告日保持 NULL |
+| test_both_unknown_uses_deterministic_fallback_and_keeps_ambiguity | 均未知时按内容摘要确定性回退，保留歧义日志，观察时间不冒充公告时间 |
+| test_selection_independent_of_insertion_order | 插入顺序相反时结果一致 |
+| test_current_projection_preserves_history_and_matches_stage1 | 混合数据集：当前金额与阶段一一致、当前唯一、历史 1:1 保留、验证指标一致 |
+| test_rerun_migrations_is_idempotent | 重跑不新增/不改写投影、歧义计数不变 |
 
 ## 验证命令
 
@@ -94,6 +108,9 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -v -p no:cacheprovid
 
 # 复审修复专项
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/test_stage2_rereview_fixes.py -v -p no:cacheprovider
+
+# B1 专项
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/test_stage2_rereview_fixes.py -v -p no:cacheprovider -k B1
 ```
 
-当前结果：257 passed（193 offline + 11 online + 53 复审修复）。
+当前结果：263 passed（193 offline + 11 online + 59 复审修复）。
