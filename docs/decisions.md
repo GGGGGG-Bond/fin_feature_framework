@@ -124,3 +124,19 @@
 **代价与边界**：v4 增加 unit/attempt 表、快照元信息与观察定位；请求 observer、文件校验、股票发现接线和故障注入工作量增加。失败数据会占磁盘，后续 GC/恢复须另立契约。旧充分性标记不伪装为真实原体证据；旧版本首次元信息保留，新观察表达新证据。只做 eastmoney 获准小样本；不含 2C/2D、双源或生产操作。
 
 **验证**：[46 组验收场景](stage-2/2b-test-matrix.md)要求原字节一致、同身份冲突、每次响应/无响应尝试、崩溃孤儿、事务回滚、分页完整、行观察、迁移与两条 CLI 状态。文档 DDL 校验只证明规范可执行，不替代实现回归与独立审阅。
+
+### 2B-1 实施记录（实现 agent，2026-10-16；状态：待独立审阅）
+
+在 DEC-006 已采纳的契约内，实现方对契约未逐条指定之处做了以下选择，供审阅与后续批次复用：
+
+1. **v4 不并入 `ALL_DDL`**：v4 对象单独迁移，空库的 v1 基线不提前创建 2B 结构；版本 ≥4 时每次 `run_migrations` 复查必需表/列/索引，只有版本号不足以跳过结构检查。
+2. **升级入口先备份**：`migrate_with_backup` 对"已有版本记录或已有数据"的库先用 SQLite backup API 写唯一新副本（含 WAL 已提交内容）再迁移，备份失败即不迁移；显式目标已存在直接拒绝，自动命名保证不覆盖。删掉迁移"就地重试等于一次成功"的不确定性只靠事务回滚保证（DDL/加列/索引/版本登记同事务）。
+3. **`save_raw_snapshot` 两条路径**：带 `attempt_id` 的新证据路径必须校验真实文件（存在/大小/哈希）并逐项核对 unit/run/source/report/company/page；无 `attempt_id` 的 legacy 路径只能落 `legacy-unverified` + `legacy_unverified`，且不能被改判为 v4 结论。
+4. **单元完整性用可注入证明**：`UnitEvidence`（complete + 全部最终页 snapshot + `row_verifier`）代替"必须先提交 unit.success"的循环依赖；`row_verifier` 由协调器提供并在 Repository 内被调用，因此"row_index 能重建本次映射/标准值"是可核验条件而非调用方声明。
+5. **来源行身份预检先于投影变更**：`(snapshot_id,row_index)` 的重放幂等与矛盾冲突在修改 `is_superseded`/`superseded_by` 与观察行之前判定，冲突时当前投影与既有观察都不残留部分改动。
+6. **对账严格只读**：`audit-raw` 不执行迁移、不建表、不删除孤儿或临时文件、不补抓；未结算 attempt 在**任何**单元状态下都报 `unfinished_attempt`（不只成功单元），`transport_error` 允许无快照。
+7. **路径段白名单**：仅接受来源名 `[a-z][a-z0-9_]*`、UUID/摘要 `[A-Za-z0-9_-]{1,64}`、正整数页/尝试号；公司名、`report_name`、用户输入绝不作为路径段。
+
+**代价与边界**：失败时的孤儿文件与临时文件会占用磁盘且不自动清理（GC/恢复须另立契约）；`UnitEvidence` 的强度取决于协调器提供的核验器，2B-2 必须由协调器真实重建；本批未接 HTTP、未升级任何真实数据库，`audit-raw` 尚无真实库可对账。
+
+**验证办法**：`tests/test_raw_store.py`、`tests/test_ingestion_migration.py`、`tests/test_ingestion_unit.py`、`tests/test_raw_audit.py` 共 91 项，配合既有回归共 343 项离线通过；故障分支均为真实注入（fsync/link/DB 插入/迁移中途/备份目标/损坏 gzip）。B01-B15 与 B42 的场景到用例映射见 [2B 验收矩阵](stage-2/2b-test-matrix.md)。

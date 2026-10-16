@@ -72,3 +72,32 @@
 - 全项目离线测试及 CLI --help；新增配置非法场景、链接/格式检查；小样本真实联网仅在已获准范围核验，不把 mock 结果写成来源探测。没有必要为本架构文档本身运行网络或业务迁移。
 - 每次送审固定 head、列明输入范围/临时 DB 和目录/验证命令/实际结果/失败样例；提交推送前核对项目、分支和作者/提交者。用户按既有流程创建/合入 MR。
 - 2B 完成不宣称已能重放特征或历史时点查询；这两项分别属于 2D/阶段 4。
+
+## 2B-1 实现映射（实现 agent 记录，2026-10-16；待独立审阅）
+
+固定实现：分支 `feat/stage2b-1`，基准 `593d65b`。命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/test_raw_store.py tests/test_ingestion_migration.py tests/test_ingestion_unit.py tests/test_raw_audit.py -q -p no:cacheprovider
+```
+
+| ID | 用例位置 |
+|---|---|
+| B01 | `test_raw_store.py::TestB01BodyIdentity`（逐字节/gzip/空格与编码差异/HTML/非法 JSON/空 body；`compute_raw_hash` 原语见 `TestRawHashPrimitive`） |
+| B02 | `test_raw_store.py::TestB02ReuseSameIdentity`（文件字节与 mtime 不变、同 attempt 复用快照） |
+| B03 | `test_raw_store.py::TestB03ConflictNoOverwrite`（不同 body、损坏目标、抢占竞争、link 不支持拒绝覆盖写回退） |
+| B04 | `test_raw_store.py::TestB04IdentitySeparation`（run/公司/页/尝试/unit_key 各自分离；路径布局与页号不截断） |
+| B05 | `test_raw_store.py::TestB05MissingOrTamperedEvidence`（缺文件/错哈希/错大小/截断 gzip/提交后篡改/legacy 不能声明充分，且无新增版本与观察） |
+| B06 | `test_raw_store.py::TestB06PathContainment`（`..`、绝对路径、非法段、symlink 越根；根外文件不变） |
+| B07 | `test_raw_store.py::TestB07FailureInjection`（fsync 失败、snapshot 插入失败留孤儿并被对账识别、业务 UOW 回滚保留文件与 attempt） |
+| B08 | `test_raw_store.py::TestB08SizeBounds`（留存超限、解压超限、损坏 gzip、非法上限配置） |
+| B09 | `test_ingestion_migration.py::TestB09UpgradeFromV3`（v3 含历史库升级保行/哈希/legacy 标记、空库按序迁移、幂等、FK 检查） |
+| B10 | `test_ingestion_migration.py::TestB10MigrationFailureRollback`（建完索引后注入失败：DDL/列/版本回滚、外层事务未提交且外层数据仍在、重试与一次成功结构一致） |
+| B11 | `test_ingestion_migration.py::TestB11Backup`（WAL 已提交行进副本、备份失败不迁移、目标已存在拒绝且原文件不变、自动命名唯一、空库不需备份） |
+| B12 | `test_ingestion_migration.py::TestB12IncompleteV4Rejected`（缺表/缺列/缺索引、仅版本号=4 的伪完整库、gap 报告只读） |
+| B13 | `test_ingestion_unit.py::TestB13UnitKeyAndPlanning`（范围参数区分、键序稳定、同语义只计划一次、新 run 独立单元、stock_list 形状、单元生命周期与失败重入拒绝、`max_pages_per_unit` 配置边界） |
+| B14 | `test_ingestion_unit.py::TestB14CrossEntityConsistency`（run/来源、attempt/unit、snapshot 报表/公司/页/状态码、快照归属 run、run_id 导出、版本 run 错配、单元证明身份） |
+| B15 | `test_ingestion_unit.py::TestB15ReplayAndConflict`（同 attempt 重登记与重复结算、快照重放幂等与冲突、来源行重放幂等、矛盾输入不部分修改投影与观察、同内容不同行共用版本、核验器不符拒绝、校验单向） |
+| B42 | `test_raw_audit.py`（缺文件/篡改/孤儿/temp/legacy/未完成 run-unit-attempt/成功单元缺证据、run 范围过滤、报告前后库与文件指纹不变、`cmd_audit_raw` 退出码 0/1/2 与报告落盘） |
+
+未在本批覆盖：B16-B33（2B-2）、B34-B41、B43-B46（2B-3）。
