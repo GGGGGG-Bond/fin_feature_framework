@@ -14,6 +14,7 @@
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (1, "v1_baseline", migrate_v1_baseline),
     (2, "v2_stage2", migrate_v2_stage2),
+    (3, "v3_rereview_fixes", migrate_v3_rereview_fixes),
 ]
 ```
 
@@ -53,6 +54,15 @@ def _apply_migration(conn, version, name, fn):
 - 旧 raw_* 数据迁移到 statement_version
 - 创建阶段 2 索引
 
+## migrate_v3_rereview_fixes（version=3 — A2 修复）
+
+旧 v2 草稿库（d29637d/4f99ee8/5390dac/181c4b6）记录 `schema_version=2`，但结构不完整：缺 `statement_observation` 表、缺观察元信息列、缺新哈希 CHECK 约束、缺阶段 2 索引。`run_migrations` 只看版本号，会静默返回成功，首次观察写入才报 `no such table`。v3 幂等补齐：
+
+- **旧 `statement_version` 缺新哈希约束**：为空则重建（SQLite 无法 ALTER 加 CHECK）；**含数据则拒绝**（`RuntimeError`，提示保留原库、从受支持的阶段一副本迁移），不静默接受、不删原库数据。
+- 幂等补齐全部阶段 2 表（旧草稿库缺 `statement_observation` 等）。
+- 补 `statement_observation` 的 A3 观察元信息列（`notice_date`/`revision_notice_date`/`revision_type`）。
+- 创建阶段 2 索引（`IF NOT EXISTS`）。
+
 ## 旧 raw_* 迁移约束
 
 - `evidence_sufficient=0`（无原始响应，不编造）
@@ -60,6 +70,7 @@ def _apply_migration(conn, version, name, fn):
 - `observed_at` 用 crawled_at（若为 NULL 则用迁移时间）
 - `currency=unknown`（R4-a 修复：不推断 CNY，哈希与 INSERT 使用同一值）
 - `metric_hash`/`semantic_hash` 用 `hashing.py` 统一计算
+- **A6 修复**：标准化字段经 `normalize_numeric` 统一数值表示后再计算哈希与存储，与运行时 `create_statement_version` 共用同一处理
 - `observation_seq` 按 (secucode, report_date, table_type, source_name) 分组，按 notice_date, crawled_at, rowid 排序自增
 - `is_superseded`：同组内仅最新为 0，其余为 1
 - `revision_type`：统一标 unknown

@@ -65,7 +65,7 @@
 | test_old_result_preserved_after_new_computation | 不可变记录 |
 | test_compute_log_not_computable | 不可计算原因 |
 
-### test_stage2_rereview_fixes.py（28 项 — R1-R7 复审修复）
+### test_stage2_rereview_fixes.py（53 项 — R1-R7 + A1-A6 复审修复）
 
 | 测试类 | 测试数 | 覆盖 |
 |---|---|---|
@@ -76,6 +76,12 @@
 | TestR5EvidenceConsistency | 6 | R5 错来源/公司/表拒绝、默认不足 |
 | TestR6HashVerification | 7 | R6 内部计算、不静默去重、格式校验 |
 | TestR7MigrationRollback | 1 | R7 savepoint 回滚 |
+| TestA1NestedTransaction | 3 | A1 嵌套 unit_of_work 不提交/回滚外层 |
+| TestA2LegacyV2DraftUpgrade | 5 | A2 旧 v2 草稿库升级/拒绝 |
+| TestA3ObservationMetadata | 3 | A3 观察公告/修订元信息 |
+| TestA4RunConsistency | 4 | A4 快照/版本 run 一致、来源校验 |
+| TestA5HashGlobConstraint | 5 | A5 哈希 GLOB 全串校验 |
+| TestA6NumericNormalization | 5 | A6 int/float 同值不产生新版本 |
 
 ## 验证命令
 
@@ -90,4 +96,4 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -v -p no:cacheprovid
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/test_stage2_rereview_fixes.py -v -p no:cacheprovider
 ```
 
-当前结果：232 passed（204 原有 + 28 复审修复），其中 193 offline + 11 online + 28 复审修复。
+当前结果：257 passed（193 offline + 11 online + 53 复审修复）。

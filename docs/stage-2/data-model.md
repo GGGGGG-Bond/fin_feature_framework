@@ -80,24 +80,27 @@ CREATE TABLE IF NOT EXISTS statement_version (
     FOREIGN KEY (snapshot_id) REFERENCES raw_snapshot(snapshot_id),
     FOREIGN KEY (run_id) REFERENCES ingest_run(run_id),
     CHECK (evidence_sufficient = 0 OR snapshot_id IS NOT NULL),
-    CHECK (length(metric_hash) = 64 AND metric_hash GLOB '[0-9a-f]*'),
-    CHECK (length(semantic_hash) = 64 AND semantic_hash GLOB '[0-9a-f]*'),
+    CHECK (length(metric_hash) = 64 AND metric_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(semantic_hash) = 64 AND semantic_hash NOT GLOB '*[^0-9a-f]*'),
     UNIQUE (secucode, report_date, table_type, source_name, observation_seq)
 );
 ```
 
 **R5 修复**：`evidence_sufficient` 默认 0（非 1），CHECK 约束确保声明充分时必须有 snapshot_id。
-**R6 修复**：CHECK 约束确保 metric_hash/semantic_hash 为 64 字符十六进制。
+**R6/A5 修复**：CHECK 约束确保 metric_hash/semantic_hash 为 64 字符十六进制。`NOT GLOB '*[^0-9a-f]*'` 校验全串（`GLOB '[0-9a-f]*'` 只约束首字符，`*` 匹配任意后续字符）。
 
-### 5. statement_observation（观察关系 — R3 修复）
+### 5. statement_observation（观察关系 — R3/A3 修复）
 
 ```sql
 CREATE TABLE IF NOT EXISTS statement_observation (
-    observation_id   TEXT PRIMARY KEY,
-    version_id       TEXT NOT NULL,
-    snapshot_id      TEXT,
-    run_id           TEXT,
-    observed_at      TEXT DEFAULT (datetime('now', 'localtime')),
+    observation_id        TEXT PRIMARY KEY,
+    version_id            TEXT NOT NULL,
+    snapshot_id           TEXT,
+    run_id                TEXT,
+    observed_at           TEXT DEFAULT (datetime('now', 'localtime')),
+    notice_date           TEXT,
+    revision_notice_date  TEXT,
+    revision_type         TEXT DEFAULT 'unknown',
     FOREIGN KEY (version_id) REFERENCES statement_version(version_id),
     FOREIGN KEY (snapshot_id) REFERENCES raw_snapshot(snapshot_id),
     FOREIGN KEY (run_id) REFERENCES ingest_run(run_id)
@@ -105,6 +108,7 @@ CREATE TABLE IF NOT EXISTS statement_observation (
 ```
 
 **R3 修复**：同一版本可被多次观察，每次观察关联一个 snapshot。同内容重复观察不制造新版本，但通过本表保存观察与 snapshot 的关联。
+**A3 修复**：观察行保存本次观察的公告/修订元信息（`notice_date`/`revision_notice_date`/`revision_type`）。`statement_version` 行保留**首次**观察的元信息，不被后续观察覆盖；后续修订元信息归属于观察行，不得丢弃或用更新冒充最新披露。
 
 ### 6. feature_compute_log（不可变计算记录）
 
@@ -152,13 +156,15 @@ ALTER TABLE features ADD COLUMN not_computable_reason TEXT;
 - **metric_hash**：仅标准化字段值（过滤 None）
 - **semantic_hash**：字段值 + source_name + currency + consolidate_scope + period_basis + amount_unit + industry_type
 - **R6 修复**：Repository 内部调用 `compute_metric_hash`/`compute_semantic_hash` 计算哈希，不接受调用方提供的哈希值，确保哈希与负载一致
+- **A6 修复**：`normalize_numeric` 统一数值表示（整数值的 float 转 int，如 `100.0`→`100`），避免 Python/JSON 数值类型差异（`100` vs `100.0`）制造内容修订。存储与哈希使用同一规范化结果。
 
-## 事务所有权（R1 修复）
+## 事务所有权（R1/A1 修复）
 
 源码：`fin_feature/storage/repository.py`。
 
 - 所有写入方法不自行提交（移除 `with self.conn`）
 - `Repository.unit_of_work()` 上下文管理器：成功提交，异常回滚
+- **A1 修复**：`unit_of_work` 遵守连接已有事务的所有权。最外层检查 `conn.in_transaction`，无外层事务时 `BEGIN` 自有事务；有外层事务（`with conn:` 或外层 `unit_of_work`）时使用独立 `SAVEPOINT`。内层成功只 `RELEASE SAVEPOINT`，失败只 `ROLLBACK TO SAVEPOINT` 自己的范围，绝不提交/回滚外层事务。
 - `Repository.commit()` / `Repository.rollback()` 显式控制
 - 增量采集单元（raw + 水位）在 `unit_of_work` 中原子提交
 

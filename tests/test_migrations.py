@@ -8,12 +8,16 @@ import pytest
 
 from fin_feature.storage.database import get_connection
 from fin_feature.storage.migrations import (
+    MIGRATIONS,
     run_migrations,
     migrate_v1_baseline,
     migrate_v2_stage2,
     verify_migration,
     _get_current_version,
 )
+
+# 最新迁移版本（从注册表推导，避免硬编码随新增迁移失效）
+LATEST_VERSION = max(v for v, _, _ in MIGRATIONS)
 
 
 @pytest.fixture
@@ -37,7 +41,7 @@ class TestEmptyDbMigration:
 
         # 检查 schema_version
         version = _get_current_version(conn)
-        assert version == 2  # v1 + v2 都运行
+        assert version == LATEST_VERSION  # 所有迁移都运行
 
         # 检查基础表存在
         tables = {
@@ -53,10 +57,10 @@ class TestEmptyDbMigration:
     def test_v2_stage2_on_empty_db(self, temp_db):
         """v2 阶段 2 迁移在空库上正确执行。"""
         conn, _ = temp_db
-        run_migrations(conn)  # v1 + v2
+        run_migrations(conn)  # 全部迁移
 
         version = _get_current_version(conn)
-        assert version == 2
+        assert version == LATEST_VERSION
 
         # 检查阶段 2 表存在
         tables = {
@@ -116,21 +120,21 @@ class TestMigrationRollback:
 
         run_migrations(conn)
         version_before = _get_current_version(conn)
-        assert version_before == 2
+        assert version_before == LATEST_VERSION
 
         # 再次运行应幂等（不重复应用）
         run_migrations(conn)
         version_after = _get_current_version(conn)
-        assert version_after == 2
+        assert version_after == LATEST_VERSION
 
     def test_migration_failure_injects_rollback(self, temp_db):
         """R7 修复：迁移中途失败，savepoint 回滚不残留部分 DDL 或数据，版本号不更新。"""
         conn, _ = temp_db
         from fin_feature.storage.migrations import _apply_migration
 
-        # 先运行完整迁移到 v2
+        # 先运行完整迁移到最新版本
         run_migrations(conn)
-        assert _get_current_version(conn) == 2
+        assert _get_current_version(conn) == LATEST_VERSION
 
         # 注入一个会失败的迁移：先建表再抛异常
         def failing_migration(c):
@@ -138,7 +142,7 @@ class TestMigrationRollback:
             raise RuntimeError("模拟迁移故障")
 
         with pytest.raises(RuntimeError, match="模拟迁移故障"):
-            _apply_migration(conn, 3, "failing", failing_migration)
+            _apply_migration(conn, LATEST_VERSION + 1, "failing", failing_migration)
 
         # 验证回滚：test_rollback 表不应存在（DDL 被回滚）
         tables = {
@@ -148,8 +152,8 @@ class TestMigrationRollback:
         }
         assert "test_rollback" not in tables
 
-        # 版本号仍为 2（schema_version 未写入）
-        assert _get_current_version(conn) == 2
+        # 版本号仍为 LATEST_VERSION（schema_version 未写入）
+        assert _get_current_version(conn) == LATEST_VERSION
 
 
 class TestOldDataMigration:
@@ -303,7 +307,7 @@ class TestMigrationVerification:
         assert "sv_evidence_insufficient" in metrics
         assert "sv_superseded" in metrics
         assert "schema_version" in metrics
-        assert metrics["schema_version"] == 2
+        assert metrics["schema_version"] == LATEST_VERSION
 
     def test_verify_migration_sv_count_equals_raw_count(self, temp_db):
         """迁移后 sv_count == raw_count（无重复迁移、无丢表）。"""

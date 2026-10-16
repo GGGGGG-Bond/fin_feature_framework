@@ -353,21 +353,25 @@ CREATE TABLE IF NOT EXISTS statement_version (
     FOREIGN KEY (run_id) REFERENCES ingest_run(run_id),
     -- R5：声明证据充分时必须有 snapshot_id
     CHECK (evidence_sufficient = 0 OR snapshot_id IS NOT NULL),
-    -- R6：哈希必须为 64 字符十六进制 SHA-256
-    CHECK (length(metric_hash) = 64 AND metric_hash GLOB '[0-9a-f]*'),
-    CHECK (length(semantic_hash) = 64 AND semantic_hash GLOB '[0-9a-f]*'),
+    -- R6/A5：哈希必须为 64 字符十六进制 SHA-256（全串校验，非仅首字符）
+    CHECK (length(metric_hash) = 64 AND metric_hash NOT GLOB '*[^0-9a-f]*'),
+    CHECK (length(semantic_hash) = 64 AND semantic_hash NOT GLOB '*[^0-9a-f]*'),
     UNIQUE (secucode, report_date, table_type, source_name, observation_seq)
 );
 """
 
 # 4b. 观察关系（R3 修复）：同一版本可被多次观察，每次观察关联一个 snapshot
+# A3 修复：观察行保存本次观察的公告/修订元信息，不覆盖版本行的首次记录
 DDL_STATEMENT_OBSERVATION = """
 CREATE TABLE IF NOT EXISTS statement_observation (
-    observation_id   TEXT PRIMARY KEY,             -- UUID
-    version_id       TEXT NOT NULL,                 -- 关联版本
-    snapshot_id      TEXT,                          -- 关联原始响应（旧数据迁移为 NULL）
-    run_id           TEXT,                          -- 关联采集批次（旧数据迁移为 NULL）
-    observed_at      TEXT DEFAULT (datetime('now', 'localtime')),  -- 本次观察时间
+    observation_id        TEXT PRIMARY KEY,             -- UUID
+    version_id            TEXT NOT NULL,                 -- 关联版本
+    snapshot_id           TEXT,                          -- 关联原始响应（旧数据迁移为 NULL）
+    run_id                TEXT,                          -- 关联采集批次（旧数据迁移为 NULL）
+    observed_at           TEXT DEFAULT (datetime('now', 'localtime')),  -- 本次观察时间
+    notice_date           TEXT,                          -- 本次观察的公告时间
+    revision_notice_date  TEXT,                          -- 本次观察的修订公告时间
+    revision_type         TEXT DEFAULT 'unknown',        -- 本次观察的修订类型
     FOREIGN KEY (version_id) REFERENCES statement_version(version_id),
     FOREIGN KEY (snapshot_id) REFERENCES raw_snapshot(snapshot_id),
     FOREIGN KEY (run_id) REFERENCES ingest_run(run_id)

@@ -535,14 +535,15 @@ class TestR7MigrationRollback:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         run_migrations(conn)
-        assert m._get_current_version(conn) == 2
+        latest = max(v for v, _, _ in m.MIGRATIONS)
+        assert m._get_current_version(conn) == latest
 
         def failing_migration(c):
             c.execute("CREATE TABLE test_rollback (id INTEGER)")
             raise RuntimeError("模拟故障")
 
         with pytest.raises(RuntimeError, match="模拟故障"):
-            m._apply_migration(conn, 3, "failing", failing_migration)
+            m._apply_migration(conn, latest + 1, "failing", failing_migration)
 
         tables = {
             r[0] for r in conn.execute(
@@ -550,5 +551,539 @@ class TestR7MigrationRollback:
             ).fetchall()
         }
         assert "test_rollback" not in tables
-        assert m._get_current_version(conn) == 2
+        assert m._get_current_version(conn) == latest
         conn.close()
+
+
+# ===========================================================================
+# A1: 嵌套事务 — unit_of_work 不提交/回滚外层事务
+# ===========================================================================
+
+class TestA1NestedTransaction:
+    """A1 修复：嵌套的 unit_of_work 使用 savepoint，不破坏调用方原子性。"""
+
+    def test_inner_uow_does_not_commit_outer_with_conn(self, db_conn):
+        """A1：with conn 外层 + unit_of_work 内层，内层成功后外层异常 → 全部回滚。"""
+        conn, repo = db_conn
+        try:
+            with conn:
+                _make_version(repo)
+                with repo.unit_of_work():
+                    repo.update_watermark("eastmoney", "000001.SZ", "2024-04-15")
+                raise RuntimeError("outer fail")
+        except RuntimeError:
+            pass
+
+        assert conn.execute("SELECT count(*) FROM statement_version").fetchone()[0] == 0
+        assert repo.get_watermark("eastmoney", "000001.SZ") is None
+
+    def test_inner_uow_does_not_commit_outer_uow(self, db_conn):
+        """A1：外层、内层均 unit_of_work，内层成功后外层异常 → 全部回滚。"""
+        conn, repo = db_conn
+        try:
+            with repo.unit_of_work():
+                _make_version(repo)
+                with repo.unit_of_work():
+                    repo.update_watermark("eastmoney", "000001.SZ", "2024-04-15")
+                raise RuntimeError("outer fail")
+        except RuntimeError:
+            pass
+
+        assert conn.execute("SELECT count(*) FROM statement_version").fetchone()[0] == 0
+        assert repo.get_watermark("eastmoney", "000001.SZ") is None
+
+    def test_inner_uow_failure_preserves_outer(self, db_conn):
+        """A1：内层 unit_of_work 失败回滚后，外层数据保留。"""
+        conn, repo = db_conn
+        with repo.unit_of_work():
+            _make_version(repo)
+            try:
+                with repo.unit_of_work():
+                    repo.update_watermark("eastmoney", "000001.SZ", "2024-04-15")
+                    raise RuntimeError("inner fail")
+            except RuntimeError:
+                pass
+
+        # 外层版本保留，内层水位回滚
+        assert conn.execute("SELECT count(*) FROM statement_version").fetchone()[0] == 1
+        assert repo.get_watermark("eastmoney", "000001.SZ") is None
+
+
+# ===========================================================================
+# A2: 旧 v2 草稿库升级 — 缺少 statement_observation 表的结构被补齐
+# ===========================================================================
+
+# 5390dac 草案的 statement_version DDL（无 CHECK、无 observation 表、evidence 默认 1）
+_LEGACY_V2_STATEMENT_VERSION = """
+CREATE TABLE statement_version (
+    version_id           TEXT PRIMARY KEY,
+    snapshot_id          TEXT,
+    run_id               TEXT,
+    secucode             TEXT NOT NULL,
+    report_date          TEXT NOT NULL,
+    table_type           TEXT NOT NULL,
+    source_name          TEXT NOT NULL DEFAULT 'eastmoney',
+    notice_date          TEXT,
+    revision_notice_date TEXT,
+    revision_type        TEXT DEFAULT 'unknown',
+    observed_at          TEXT DEFAULT (datetime('now', 'localtime')),
+    metric_hash          TEXT NOT NULL,
+    semantic_hash        TEXT NOT NULL,
+    observation_seq      INTEGER NOT NULL,
+    consolidate_scope    TEXT DEFAULT 'unknown',
+    period_basis         TEXT DEFAULT 'unknown',
+    currency             TEXT DEFAULT 'unknown',
+    amount_unit          TEXT DEFAULT 'unknown',
+    industry_type        TEXT DEFAULT 'unknown',
+    standardized_fields  TEXT,
+    raw_fields           TEXT,
+    evidence_sufficient  INTEGER DEFAULT 1,
+    is_superseded        INTEGER DEFAULT 0,
+    superseded_by        TEXT,
+    FOREIGN KEY (snapshot_id) REFERENCES raw_snapshot(snapshot_id),
+    FOREIGN KEY (run_id) REFERENCES ingest_run(run_id),
+    UNIQUE (secucode, report_date, table_type, source_name, observation_seq)
+);
+"""
+
+_LEGACY_V2_INGEST_RUN = """
+CREATE TABLE ingest_run (
+    run_id TEXT PRIMARY KEY, source_name TEXT NOT NULL, request_scope TEXT,
+    started_at TEXT DEFAULT (datetime('now','localtime')), ended_at TEXT,
+    status TEXT NOT NULL DEFAULT 'running', failed_units INTEGER DEFAULT 0,
+    crawler_version TEXT, detail TEXT
+);
+"""
+
+_LEGACY_V2_RAW_SNAPSHOT = """
+CREATE TABLE raw_snapshot (
+    snapshot_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, source_name TEXT NOT NULL,
+    report_name TEXT NOT NULL, secucode TEXT, page_number INTEGER,
+    request_params TEXT, fetched_at TEXT DEFAULT (datetime('now','localtime')),
+    raw_content_hash TEXT NOT NULL, file_path TEXT NOT NULL, record_count INTEGER,
+    FOREIGN KEY (run_id) REFERENCES ingest_run(run_id)
+);
+"""
+
+
+def _make_legacy_v2_draft_db() -> sqlite3.Connection:
+    """构造 5390dac 草案 v2 库：schema_version=2，但无 statement_observation 表。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+        "applied_at TEXT DEFAULT (datetime('now','localtime')))"
+    )
+    conn.execute(_LEGACY_V2_INGEST_RUN)
+    conn.execute(_LEGACY_V2_RAW_SNAPSHOT)
+    conn.execute(_LEGACY_V2_STATEMENT_VERSION)
+    conn.execute("INSERT INTO schema_version (version, name) VALUES (1, 'v1_baseline')")
+    conn.execute("INSERT INTO schema_version (version, name) VALUES (2, 'v2_stage2')")
+    conn.commit()
+    return conn
+
+
+class TestA2LegacyV2DraftUpgrade:
+    """A2 修复：旧 v2 草稿库被 v3 迁移升级，不再静默接受缺表结构。"""
+
+    def test_legacy_v2_draft_gets_observation_table(self):
+        """A2：5390dac 草案 v2 库升级后 statement_observation 存在，观察可写入。"""
+        conn = _make_legacy_v2_draft_db()
+        assert m._table_exists(conn, "statement_version")
+        assert not m._table_exists(conn, "statement_observation")
+
+        run_migrations(conn)
+
+        assert m._table_exists(conn, "statement_observation")
+        assert m._get_current_version(conn) == max(v for v, _, _ in m.MIGRATIONS)
+
+        # 观察写入不再抛 no such table
+        repo = Repository(conn)
+        run = repo.create_ingest_run("eastmoney")
+        snap = repo.save_raw_snapshot(
+            run, "eastmoney", "RPT_LICO_FN_CPD", "000001.SZ", 1,
+            "{}", "a" * 64, "/tmp/x.json.gz", 1,
+        )
+        vid = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator", snapshot_id=snap, run_id=run,
+            standardized_fields=json.dumps({"total_operate_income": 100}),
+        )
+        assert len(repo.get_observations_for_version(vid)) == 1
+        conn.close()
+
+    def test_empty_db_reaches_latest_with_observation(self):
+        """A2：空库迁移到最新版本，含 statement_observation 表和 A3 列。"""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        run_migrations(conn)
+
+        assert m._table_exists(conn, "statement_observation")
+        assert m._get_current_version(conn) == max(v for v, _, _ in m.MIGRATIONS)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(statement_observation)").fetchall()}
+        for col in ["notice_date", "revision_notice_date", "revision_type"]:
+            assert col in cols
+
+        # 幂等：再次运行不报错、不重复
+        run_migrations(conn)
+        rows = conn.execute(
+            "SELECT version, COUNT(*) FROM schema_version GROUP BY version"
+        ).fetchall()
+        for row in rows:
+            assert row[1] == 1
+        conn.close()
+
+    def test_181c4b6_style_draft_upgraded(self):
+        """A2：181c4b6 风格 v2 库（有旧 observation 表/旧 GLOB）升级出新约束和 A3 列。"""
+        conn = _make_legacy_v2_draft_db()
+        # 模拟 181c4b6：已有旧 observation 表（无 A3 列）
+        conn.execute(
+            "CREATE TABLE statement_observation ("
+            "observation_id TEXT PRIMARY KEY, version_id TEXT NOT NULL, "
+            "snapshot_id TEXT, run_id TEXT, "
+            "observed_at TEXT DEFAULT (datetime('now','localtime')), "
+            "FOREIGN KEY (version_id) REFERENCES statement_version(version_id))"
+        )
+        conn.commit()
+
+        run_migrations(conn)
+
+        # statement_version 重建后含新约束
+        ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='statement_version'"
+        ).fetchone()[0]
+        assert "NOT GLOB" in ddl
+        # observation 补出 A3 列
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(statement_observation)").fetchall()}
+        for col in ["notice_date", "revision_notice_date", "revision_type"]:
+            assert col in cols
+        assert m._get_current_version(conn) == max(v for v, _, _ in m.MIGRATIONS)
+        conn.close()
+
+    def test_nonempty_incompatible_draft_rejected(self):
+        """A2：含数据的旧草稿库无法自动升级时，明确拒绝而非静默接受。"""
+        conn = _make_legacy_v2_draft_db()
+        conn.execute(
+            "INSERT INTO statement_version (version_id, secucode, report_date, "
+            "table_type, source_name, metric_hash, semantic_hash, observation_seq) "
+            "VALUES ('old1', '000001.SZ', '2024-03-31', 'financial_indicator', "
+            "'eastmoney', 'abc', 'def', 1)"
+        )
+        conn.commit()
+
+        with pytest.raises(RuntimeError, match="无法自动升级"):
+            run_migrations(conn)
+        # 原数据未被删除
+        assert conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 1
+        conn.close()
+
+    def test_stage1_db_upgrades_and_preserves_data(self):
+        """A2：阶段 1 库（无 schema_version）升级后旧表数据保留并迁移。"""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(s.DDL_RAW_FINANCIAL_INDICATOR)
+        conn.execute(
+            "INSERT INTO raw_financial_indicator(secucode,report_date,notice_date,"
+            "crawled_at,weightavg_roe) VALUES ('000001.SZ','2024-03-31',"
+            "'2024-04-15','2024-04-15 10:00:00',16.75)"
+        )
+        conn.commit()
+
+        run_migrations(conn)
+
+        assert m._table_exists(conn, "statement_observation")
+        # 旧表数据保留
+        raw_count = conn.execute("SELECT COUNT(*) FROM raw_financial_indicator").fetchone()[0]
+        assert raw_count == 1
+        # 迁移到 statement_version
+        sv_count = conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0]
+        assert sv_count == 1
+        conn.close()
+
+
+# ===========================================================================
+# A3: 观察元信息 — 后续公告/修订元信息存于观察行，版本保留首次
+# ===========================================================================
+
+class TestA3ObservationMetadata:
+    """A3 修复：观察行保存本次公告/修订元信息，版本行保留首次披露。"""
+
+    def test_same_content_different_notice_keeps_both(self, db_conn):
+        """A3：同内容不同公告/修订 → 同一版本，两条观察各保留元信息。"""
+        conn, repo = db_conn
+        run = repo.create_ingest_run("eastmoney")
+        s1 = repo.save_raw_snapshot(
+            run, "eastmoney", "RPT_LICO_FN_CPD", "000001.SZ", 1,
+            "{}", "a" * 64, "/tmp/1.json.gz", 1,
+        )
+        s2 = repo.save_raw_snapshot(
+            run, "eastmoney", "RPT_LICO_FN_CPD", "000001.SZ", 2,
+            "{}", "b" * 64, "/tmp/2.json.gz", 1,
+        )
+        f = json.dumps({"total_operate_income": 100})
+
+        v1 = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator", snapshot_id=s1, run_id=run,
+            notice_date="2024-04-15", revision_type="initial",
+            standardized_fields=f,
+        )
+        v2 = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator", snapshot_id=s2, run_id=run,
+            notice_date="2024-04-20", revision_notice_date="2024-04-20",
+            revision_type="revision", standardized_fields=f,
+        )
+
+        assert v1 == v2
+        obs = repo.get_observations_for_version(v1)
+        assert len(obs) == 2
+        by_type = {o["revision_type"]: o for o in obs}
+        assert by_type["initial"]["notice_date"] == "2024-04-15"
+        assert by_type["revision"]["notice_date"] == "2024-04-20"
+        assert by_type["revision"]["revision_notice_date"] == "2024-04-20"
+
+    def test_version_keeps_first_notice_metadata(self, db_conn):
+        """A3：版本行保留首次观察的 notice/revision_type，不被后续覆盖。"""
+        conn, repo = db_conn
+        run = repo.create_ingest_run("eastmoney")
+        s1 = repo.save_raw_snapshot(
+            run, "eastmoney", "RPT_LICO_FN_CPD", "000001.SZ", 1,
+            "{}", "a" * 64, "/tmp/1.json.gz", 1,
+        )
+        s2 = repo.save_raw_snapshot(
+            run, "eastmoney", "RPT_LICO_FN_CPD", "000001.SZ", 2,
+            "{}", "b" * 64, "/tmp/2.json.gz", 1,
+        )
+        f = json.dumps({"total_operate_income": 100})
+
+        vid = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator", snapshot_id=s1, run_id=run,
+            notice_date="2024-04-15", revision_type="initial",
+            standardized_fields=f,
+        )
+        repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator", snapshot_id=s2, run_id=run,
+            notice_date="2024-04-20", revision_type="revision",
+            standardized_fields=f,
+        )
+
+        row = conn.execute(
+            "SELECT notice_date, revision_type FROM statement_version WHERE version_id=?",
+            (vid,),
+        ).fetchone()
+        assert row["notice_date"] == "2024-04-15"
+        assert row["revision_type"] == "initial"
+
+    def test_observation_metadata_defaults(self, db_conn):
+        """A3：未提供元信息时观察行默认 revision_type=unknown。"""
+        conn, repo = db_conn
+        run = repo.create_ingest_run("eastmoney")
+        snap = repo.save_raw_snapshot(
+            run, "eastmoney", "RPT_LICO_FN_CPD", "000001.SZ", 1,
+            "{}", "a" * 64, "/tmp/x.json.gz", 1,
+        )
+        vid = _make_version(repo, snapshot_id=snap, run_id=run)
+        obs = repo.get_observations_for_version(vid)
+        assert obs[0]["revision_type"] == "unknown"
+        assert obs[0]["notice_date"] is None
+
+
+# ===========================================================================
+# A4: run 一致性 — 快照与版本的采集批次必须一致
+# ===========================================================================
+
+class TestA4RunConsistency:
+    """A4 修复：校验快照 run 与版本 run 一致，创建快照时校验来源。"""
+
+    def test_run_mismatch_rejected(self, db_conn):
+        """A4：快照 run A + 版本 run B → 拒绝。"""
+        conn, repo = db_conn
+        run_a = repo.create_ingest_run("eastmoney")
+        run_b = repo.create_ingest_run("eastmoney")
+        snap = repo.save_raw_snapshot(
+            run_a, "eastmoney", "RPT_LICO_FN_CPD", "000001.SZ", 1,
+            "{}", "a" * 64, "/tmp/x.json.gz", 1,
+        )
+        with pytest.raises(ValueError, match="采集批次不一致"):
+            _make_version(repo, snapshot_id=snap, run_id=run_b, evidence_sufficient=1)
+
+    def test_run_match_accepted(self, db_conn):
+        """A4：快照 run A + 版本 run A → 接受。"""
+        conn, repo = db_conn
+        run = repo.create_ingest_run("eastmoney")
+        snap = repo.save_raw_snapshot(
+            run, "eastmoney", "RPT_LICO_FN_CPD", "000001.SZ", 1,
+            "{}", "a" * 64, "/tmp/x.json.gz", 1,
+        )
+        vid = _make_version(repo, snapshot_id=snap, run_id=run, evidence_sufficient=1)
+        row = conn.execute(
+            "SELECT run_id FROM statement_version WHERE version_id=?", (vid,)
+        ).fetchone()
+        assert row["run_id"] == run
+
+    def test_snapshot_source_mismatch_rejected(self, db_conn):
+        """A4：save_raw_snapshot 来源与 run 不一致 → 拒绝。"""
+        conn, repo = db_conn
+        run = repo.create_ingest_run("eastmoney")
+        with pytest.raises(ValueError, match="来源不一致"):
+            repo.save_raw_snapshot(
+                run, "other_source", "RPT_LICO_FN_CPD", "000001.SZ", 1,
+                "{}", "a" * 64, "/tmp/x.json.gz", 1,
+            )
+
+    def test_snapshot_unknown_run_rejected(self, db_conn):
+        """A4：save_raw_snapshot 引用不存在的 run → 拒绝。"""
+        conn, repo = db_conn
+        with pytest.raises(ValueError, match="不存在于 ingest_run"):
+            repo.save_raw_snapshot(
+                "no-such-run", "eastmoney", "RPT_LICO_FN_CPD", "000001.SZ", 1,
+                "{}", "a" * 64, "/tmp/x.json.gz", 1,
+            )
+
+
+# ===========================================================================
+# A5: 哈希 GLOB 约束 — 全串十六进制，非仅首字符
+# ===========================================================================
+
+class TestA5HashGlobConstraint:
+    """A5 修复：CHECK 约束校验全串十六进制，非仅首字符。"""
+
+    def _fresh_conn(self):
+        c = sqlite3.connect(":memory:")
+        c.row_factory = sqlite3.Row
+        run_migrations(c)
+        return c
+
+    def _insert_hash(self, conn, metric_hash, semantic_hash, vid):
+        conn.execute(
+            "INSERT INTO statement_version "
+            "(version_id, secucode, report_date, table_type, source_name, "
+            "metric_hash, semantic_hash, observation_seq) "
+            "VALUES (?, '000001.SZ', '2024-03-31', 'financial_indicator', 'eastmoney', ?, ?, 1)",
+            (vid, metric_hash, semantic_hash),
+        )
+
+    def test_valid_hex_accepted(self):
+        """A5：全小写十六进制 64 字符被接受。"""
+        c = self._fresh_conn()
+        h = "a" * 64
+        self._insert_hash(c, h, h, "v1")
+        assert c.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 1
+        c.close()
+
+    def test_middle_non_hex_rejected(self):
+        """A5：首字符合法、中间非十六进制 → 拒绝。"""
+        c = self._fresh_conn()
+        bad = "a" + "z" + "0" * 62
+        with pytest.raises(sqlite3.IntegrityError):
+            self._insert_hash(c, bad, "a" * 64, "v2")
+        c.close()
+
+    def test_end_non_hex_rejected(self):
+        """A5：首字符合法、末尾非十六进制 → 拒绝。"""
+        c = self._fresh_conn()
+        bad = "0" * 63 + "z"
+        with pytest.raises(sqlite3.IntegrityError):
+            self._insert_hash(c, "a" * 64, bad, "v3")
+        c.close()
+
+    def test_uppercase_rejected(self):
+        """A5：大写十六进制 → 拒绝（与 is_valid_hash 的 [0-9a-f] 一致）。"""
+        c = self._fresh_conn()
+        with pytest.raises(sqlite3.IntegrityError):
+            self._insert_hash(c, "A" * 64, "a" * 64, "v4")
+        c.close()
+
+    def test_wrong_length_rejected(self):
+        """A5：长度非 64 → 拒绝。"""
+        c = self._fresh_conn()
+        with pytest.raises(sqlite3.IntegrityError):
+            self._insert_hash(c, "a" * 63, "a" * 64, "v5")
+        c.close()
+
+
+# ===========================================================================
+# A6: 数值表示规范化 — 100 与 100.0 不产生新版本
+# ===========================================================================
+
+class TestA6NumericNormalization:
+    """A6 修复：统一数值表示，int/float 同值不制造内容修订。"""
+
+    def test_int_and_float_same_version(self, db_conn):
+        """A6：100 与 100.0 → 同一版本。"""
+        conn, repo = db_conn
+        v1 = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator",
+            standardized_fields=json.dumps({"total_operate_income": 100}),
+        )
+        v2 = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator",
+            standardized_fields=json.dumps({"total_operate_income": 100.0}),
+        )
+        assert v1 == v2
+        assert conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 1
+
+    def test_stored_fields_normalized(self, db_conn):
+        """A6：存储的标准化字段被规范化为整型文本（与哈希一致）。"""
+        conn, repo = db_conn
+        vid = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator",
+            standardized_fields=json.dumps({"total_operate_income": 100.0}),
+        )
+        row = conn.execute(
+            "SELECT standardized_fields FROM statement_version WHERE version_id=?",
+            (vid,),
+        ).fetchone()
+        # 存储为 100 而非 100.0
+        assert row["standardized_fields"] == '{"total_operate_income":100}'
+
+    def test_key_order_same_hash(self, db_conn):
+        """A6：键序变化 → 同一版本（sort_keys 保证）。"""
+        conn, repo = db_conn
+        v1 = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator",
+            standardized_fields=json.dumps({"a": 100, "b": 200}),
+        )
+        v2 = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator",
+            standardized_fields=json.dumps({"b": 200, "a": 100}),
+        )
+        assert v1 == v2
+
+    def test_value_change_creates_new_version(self, db_conn):
+        """A6：真实值变化（100→120）→ 新版本。"""
+        conn, repo = db_conn
+        v1 = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator",
+            standardized_fields=json.dumps({"total_operate_income": 100}),
+        )
+        v2 = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator",
+            standardized_fields=json.dumps({"total_operate_income": 120}),
+        )
+        assert v1 != v2
+
+    def test_non_integer_float_preserved(self, db_conn):
+        """A6：非整数浮点（如 0.1675）不被截断。"""
+        conn, repo = db_conn
+        vid = repo.create_statement_version(
+            secucode="000001.SZ", report_date="2024-03-31",
+            table_type="financial_indicator",
+            standardized_fields=json.dumps({"weightavg_roe": 0.1675}),
+        )
+        row = conn.execute(
+            "SELECT standardized_fields FROM statement_version WHERE version_id=?",
+            (vid,),
+        ).fetchone()
+        assert json.loads(row["standardized_fields"])["weightavg_roe"] == 0.1675

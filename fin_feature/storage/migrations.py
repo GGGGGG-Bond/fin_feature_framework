@@ -130,6 +130,83 @@ def _ensure_column_exists(conn: sqlite3.Connection, table: str, column: str, dty
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {dtype}")
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    """检查表是否存在。"""
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    )
+    return cur.fetchone() is not None
+
+
+def _statement_version_needs_upgrade(conn: sqlite3.Connection) -> bool:
+    """检查已存在的 statement_version 是否缺少新的哈希约束。"""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='statement_version'"
+    ).fetchone()
+    if row is None:
+        return False
+    return "NOT GLOB" not in (row[0] or "")
+
+
+def _upgrade_statement_version(conn: sqlite3.Connection) -> None:
+    """升级旧 v2 草稿库的 statement_version 以补全新约束。
+
+    SQLite 无法 ALTER 添加 CHECK 约束，只能重建。仅当表为空时安全重建
+    （未发布的草稿库通常为空）；含数据时拒绝，提示从受支持的阶段一副本迁移，
+    不静默接受、也不直接删除原库数据。
+    """
+    count = conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0]
+    if count:
+        raise RuntimeError(
+            f"旧 v2 草稿库的 statement_version 含 {count} 条数据且缺少哈希约束，"
+            "无法自动升级；请保留原库并从受支持的阶段一副本迁移。"
+        )
+    conn.execute("DROP TABLE statement_version")
+
+
+def migrate_v3_rereview_fixes(conn: sqlite3.Connection) -> None:
+    """v3 复审修复迁移：补齐旧 v2 草稿库缺失的结构。
+
+    A2 修复：5390dac/4f99ee8/181c4b6 等旧 v2 草稿库记录 version=2 但缺少
+    statement_observation 表、观察元信息列、新哈希 CHECK 约束和阶段 2 索引。
+    本迁移幂等补齐，且在无法安全升级时明确拒绝（不静默接受、不删原库数据）：
+    - 旧 statement_version 缺新约束且为空 → 重建；含数据 → 拒绝
+    - 幂等补齐全部阶段 2 表（旧草稿库缺 statement_observation 等）
+    - 补 statement_observation 的 A3 观察元信息列
+    - 创建阶段 2 索引
+    """
+    from fin_feature.storage.schema import (
+        DDL_INGEST_RUN,
+        DDL_RAW_SNAPSHOT,
+        DDL_STATEMENT_VERSION,
+        DDL_STATEMENT_OBSERVATION,
+        DDL_RECONCILIATION_RESULT,
+        DDL_FEATURE_COMPUTE_LOG,
+        ALL_INDEXES_STAGE2,
+    )
+
+    # 1. 旧 statement_version 缺新约束 → 空表重建，含数据则拒绝
+    if _table_exists(conn, "statement_version") and _statement_version_needs_upgrade(conn):
+        _upgrade_statement_version(conn)
+
+    # 2. 幂等补齐全部阶段 2 表（旧草稿库缺 statement_observation 等）
+    for ddl in [DDL_INGEST_RUN, DDL_RAW_SNAPSHOT, DDL_STATEMENT_VERSION,
+                DDL_STATEMENT_OBSERVATION, DDL_RECONCILIATION_RESULT,
+                DDL_FEATURE_COMPUTE_LOG]:
+        conn.execute(ddl)
+
+    # 3. 补 A3 观察元信息列（181c4b6 v2 库的 statement_observation 缺这些列）
+    if _table_exists(conn, "statement_observation"):
+        _ensure_column_exists(conn, "statement_observation", "notice_date", "TEXT")
+        _ensure_column_exists(conn, "statement_observation", "revision_notice_date", "TEXT")
+        _ensure_column_exists(conn, "statement_observation", "revision_type", "TEXT DEFAULT 'unknown'")
+
+    # 4. 创建阶段 2 索引（旧 v2 草稿库缺索引；已有则 IF NOT EXISTS 跳过）
+    for idx in ALL_INDEXES_STAGE2:
+        conn.execute(idx)
+
+
 def _add_features_columns(conn: sqlite3.Connection) -> None:
     """features 表加 6 列（幂等）。"""
     columns_to_add = [
@@ -166,7 +243,7 @@ def _migrate_raw_to_statement_version(conn: sqlite3.Connection) -> None:
 
     # R4-b 修复：使用统一标准化入口，传入固定 unit_map（不受运行时 _unit_overrides 污染）
     from fin_feature.features.standardize import standardize_record, FIELD_UNITS
-    from fin_feature.storage.hashing import compute_metric_hash, compute_semantic_hash, canonical_json
+    from fin_feature.storage.hashing import compute_metric_hash, compute_semantic_hash, canonical_json, normalize_numeric
 
     migration_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -240,6 +317,8 @@ def _migrate_raw_to_statement_version(conn: sqlite3.Connection) -> None:
 
                 # standardized_fields：标准单位值（过滤 None 值）
                 standardized_filtered = {k: v for k, v in standardized_dict.items() if v is not None}
+                # A6 修复：统一数值表示，避免 100 与 100.0 产生不同哈希
+                standardized_filtered = normalize_numeric(standardized_filtered)
                 standardized_json = canonical_json(standardized_filtered)
 
                 # R4-a 修复：currency 统一标 unknown（不推断 CNY），哈希与 INSERT 使用同一值
@@ -346,4 +425,5 @@ def verify_migration(conn: sqlite3.Connection) -> dict:
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (1, "v1_baseline", migrate_v1_baseline),
     (2, "v2_stage2", migrate_v2_stage2),
+    (3, "v3_rereview_fixes", migrate_v3_rereview_fixes),
 ]

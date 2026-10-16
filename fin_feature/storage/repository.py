@@ -13,19 +13,39 @@ class _UnitOfWork:
     """事务上下文管理器：成功提交，异常回滚。
 
     R1 修复：为 Repository 提供明确的事务所有权边界，使多个写入可组合为原子单元。
+    A1 修复：嵌套时使用 savepoint，不提交/回滚外层事务。最外层显式开启事务，
+    使嵌套的 unit_of_work 能通过 conn.in_transaction 检测到外层事务并使用 savepoint。
     """
 
     def __init__(self, conn: sqlite3.Connection):
         self._conn = conn
+        self._savepoint: str | None = None
 
     def __enter__(self) -> "_UnitOfWork":
+        if self._conn.in_transaction:
+            # 嵌套：已有外层事务，使用 savepoint 管理自己的范围
+            import uuid
+            self._savepoint = f"uow_{uuid.uuid4().hex[:8]}"
+            self._conn.execute(f"SAVEPOINT {self._savepoint}")
+        else:
+            # 最外层：显式开启事务，内层 unit_of_work 将检测到并使用 savepoint
+            self._conn.execute("BEGIN")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        if exc_type is None:
-            self._conn.commit()
+        if self._savepoint is not None:
+            # 嵌套：只管理自己的 savepoint，不影响外层事务
+            if exc_type is None:
+                self._conn.execute(f"RELEASE SAVEPOINT {self._savepoint}")
+            else:
+                self._conn.execute(f"ROLLBACK TO SAVEPOINT {self._savepoint}")
+                self._conn.execute(f"RELEASE SAVEPOINT {self._savepoint}")
         else:
-            self._conn.rollback()
+            # 最外层：提交或回滚整个事务
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
 
 
 class Repository:
@@ -51,6 +71,10 @@ class Repository:
 
         R1 修复：提供明确的事务所有权边界。多个写入方法可在同一 unit_of_work
         中组合为原子单元，失败一起回滚。
+
+        A1 修复：嵌套时使用 savepoint，不提交/回滚外层事务。最外层显式 BEGIN，
+        内层检测到已有事务后使用独立 savepoint，内层成功只 RELEASE，失败只
+        ROLLBACK TO 自己的 savepoint。
 
         用法：
             with repo.unit_of_work():
@@ -451,8 +475,23 @@ class Repository:
         file_path: str,
         record_count: int,
     ) -> str:
-        """保存原始响应记录，返回 snapshot_id（UUID）。P1 #3 修复：不自行提交。"""
+        """保存原始响应记录，返回 snapshot_id（UUID）。P1 #3 修复：不自行提交。
+
+        A4 修复：校验 run_id 存在于 ingest_run 且 source_name 一致，
+        在创建边界阻止错误的 run/source 关联。
+        """
         import uuid
+        # A4：校验 run 存在且来源一致
+        run_row = self.conn.execute(
+            "SELECT source_name FROM ingest_run WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if run_row is None:
+            raise ValueError(f"run_id={run_id} 不存在于 ingest_run 表")
+        if run_row[0] != source_name:
+            raise ValueError(
+                f"来源不一致：ingest_run.source_name={run_row[0]}，snapshot source_name={source_name}"
+            )
         snapshot_id = str(uuid.uuid4())
         sql = """
             INSERT INTO raw_snapshot
@@ -506,7 +545,8 @@ class Repository:
         import uuid
 
         from fin_feature.storage.hashing import (
-            compute_metric_hash, compute_semantic_hash, is_valid_hash,
+            compute_metric_hash, compute_semantic_hash,
+            normalize_numeric, canonical_json,
         )
 
         # R6 修复：内部计算哈希，不接受调用方提供的哈希值
@@ -517,6 +557,11 @@ class Repository:
             std_dict = json.loads(standardized_fields)
         except (json.JSONDecodeError, TypeError) as e:
             raise ValueError(f"standardized_fields 不是有效 JSON：{e}") from e
+
+        # A6 修复：统一数值表示后重新序列化存储，确保存储与哈希一致
+        std_dict = {k: v for k, v in std_dict.items() if v is not None}
+        std_dict = normalize_numeric(std_dict)
+        standardized_fields = canonical_json(std_dict)
 
         metric_hash = compute_metric_hash(std_dict)
         semantic_hash = compute_semantic_hash(
@@ -534,13 +579,13 @@ class Repository:
         if evidence_sufficient is None:
             evidence_sufficient = 0 if snapshot_id is None else 1
 
-        # R5：显式声明充分时，必须有有效 snapshot_id 且来源/公司/报表一致
-        if evidence_sufficient == 1:
-            if snapshot_id is None:
-                raise ValueError("evidence_sufficient=1 时必须提供有效 snapshot_id")
+        # R5/A4：有快照时校验来源/公司/报表/批次一致
+        if snapshot_id is not None:
             self._verify_snapshot_consistency(
-                snapshot_id, source_name, secucode, table_type
+                snapshot_id, source_name, secucode, table_type, run_id
             )
+        elif evidence_sufficient == 1:
+            raise ValueError("evidence_sufficient=1 时必须提供有效 snapshot_id")
 
         # R2/R3 修复：检查是否已存在相同 metric_hash + semantic_hash 的版本（同内容幂等）
         existing = self.conn.execute("""
@@ -567,7 +612,13 @@ class Repository:
                       AND version_id != ?
                 """, (existing_id, secucode, report_date, table_type, source_name, existing_id))
             # R3：同内容重复观察不制造新版本，但保存本次观察与 snapshot 的关联
-            self._record_observation(existing_id, snapshot_id, run_id)
+            # A3：保存本次观察的公告/修订元信息
+            self._record_observation(
+                existing_id, snapshot_id, run_id,
+                notice_date=notice_date,
+                revision_notice_date=revision_notice_date,
+                revision_type=revision_type,
+            )
             return existing_id
 
         # 获取下一 observation_seq
@@ -597,7 +648,13 @@ class Repository:
         )
 
         # R3：记录首次观察与 snapshot 的关联
-        self._record_observation(version_id, snapshot_id, run_id)
+        # A3：保存本次观察的公告/修订元信息
+        self._record_observation(
+            version_id, snapshot_id, run_id,
+            notice_date=notice_date,
+            revision_notice_date=revision_notice_date,
+            revision_type=revision_type,
+        )
 
         # 标记旧版本为替代（同分组内仅最新为 0）
         self.conn.execute("""
@@ -610,9 +667,13 @@ class Repository:
         return version_id
 
     def _verify_snapshot_consistency(
-        self, snapshot_id: str, source_name: str, secucode: str, table_type: str
+        self, snapshot_id: str, source_name: str, secucode: str, table_type: str,
+        run_id: str | None = None,
     ) -> None:
         """R5 修复：校验 snapshot 的来源/公司/报表与版本一致。
+
+        A4 修复：同时校验 run 一致性——快照的 run_id 与版本的 run_id 必须相同，
+        避免版本和观察归属错误的采集批次。
 
         snapshot 的 secucode 可为空（股票列表请求无公司），此时不校验公司。
         report_name 与 table_type 的映射通过 REPORT_TO_TABLE_TYPE 完成。
@@ -628,7 +689,7 @@ class Repository:
         expected_report = TABLE_TYPE_TO_REPORT.get(table_type)
 
         row = self.conn.execute(
-            "SELECT source_name, secucode, report_name FROM raw_snapshot WHERE snapshot_id = ?",
+            "SELECT source_name, secucode, report_name, run_id FROM raw_snapshot WHERE snapshot_id = ?",
             (snapshot_id,),
         ).fetchone()
         if row is None:
@@ -637,6 +698,7 @@ class Repository:
         snap_source = row[0]
         snap_secucode = row[1]
         snap_report = row[2]
+        snap_run = row[3]
 
         if snap_source != source_name:
             raise ValueError(
@@ -651,12 +713,21 @@ class Repository:
             raise ValueError(
                 f"snapshot 报表不一致：snapshot.report_name={snap_report}，版本 table_type={table_type}（期望 {expected_report}）"
             )
+        # A4：run 一致性校验——两者非空时必须相同
+        if run_id is not None and snap_run is not None and snap_run != run_id:
+            raise ValueError(
+                f"snapshot 采集批次不一致：snapshot.run_id={snap_run}，版本 run_id={run_id}"
+            )
 
     def _record_observation(
-        self, version_id: str, snapshot_id: str | None, run_id: str | None
+        self, version_id: str, snapshot_id: str | None, run_id: str | None,
+        notice_date: str | None = None,
+        revision_notice_date: str | None = None,
+        revision_type: str = "unknown",
     ) -> None:
         """R3 修复：在 statement_observation 表记录本次观察与 snapshot 的关联。
 
+        A3 修复：保存本次观察的公告/修订元信息，不覆盖版本行的首次记录。
         snapshot_id 为 None 时不记录观察（旧数据迁移无原始响应）。
         """
         if snapshot_id is None:
@@ -664,9 +735,12 @@ class Repository:
         import uuid
         observation_id = str(uuid.uuid4())
         self.conn.execute("""
-            INSERT INTO statement_observation (observation_id, version_id, snapshot_id, run_id)
-            VALUES (?, ?, ?, ?)
-        """, (observation_id, version_id, snapshot_id, run_id))
+            INSERT INTO statement_observation
+            (observation_id, version_id, snapshot_id, run_id,
+             notice_date, revision_notice_date, revision_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (observation_id, version_id, snapshot_id, run_id,
+              notice_date, revision_notice_date, revision_type))
 
     def get_observations_for_version(self, version_id: str) -> list[sqlite3.Row]:
         """R3 修复：获取某版本的全部观察记录（含关联的 snapshot）。"""
