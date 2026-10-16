@@ -110,11 +110,10 @@ class TestIdempotentMigration:
 class TestMigrationRollback:
     """迁移失败回滚测试。"""
 
-    def test_migration_failure_rollback(self, temp_db):
-        """迁移中途失败，事务回滚不更新版本号。"""
+    def test_migration_idempotent(self, temp_db):
+        """重复运行迁移不更新版本号、不重复写入 schema_version。"""
         conn, _ = temp_db
 
-        # 运行完整迁移
         run_migrations(conn)
         version_before = _get_current_version(conn)
         assert version_before == 2
@@ -123,6 +122,34 @@ class TestMigrationRollback:
         run_migrations(conn)
         version_after = _get_current_version(conn)
         assert version_after == 2
+
+    def test_migration_failure_injects_rollback(self, temp_db):
+        """R7 修复：迁移中途失败，savepoint 回滚不残留部分 DDL 或数据，版本号不更新。"""
+        conn, _ = temp_db
+        from fin_feature.storage.migrations import _apply_migration
+
+        # 先运行完整迁移到 v2
+        run_migrations(conn)
+        assert _get_current_version(conn) == 2
+
+        # 注入一个会失败的迁移：先建表再抛异常
+        def failing_migration(c):
+            c.execute("CREATE TABLE test_rollback (id INTEGER)")
+            raise RuntimeError("模拟迁移故障")
+
+        with pytest.raises(RuntimeError, match="模拟迁移故障"):
+            _apply_migration(conn, 3, "failing", failing_migration)
+
+        # 验证回滚：test_rollback 表不应存在（DDL 被回滚）
+        tables = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "test_rollback" not in tables
+
+        # 版本号仍为 2（schema_version 未写入）
+        assert _get_current_version(conn) == 2
 
 
 class TestOldDataMigration:

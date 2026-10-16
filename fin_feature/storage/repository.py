@@ -338,13 +338,12 @@ class Repository:
         return row[0] if row else None
 
     def update_watermark(self, source_name: str, secucode: str, last_notice_date: str) -> None:
-        """更新增量水位。"""
+        """更新增量水位。R1 修复：不自行提交，事务由外层控制。"""
         sql = (
             "INSERT OR REPLACE INTO crawl_watermark (source_name, secucode, last_notice_date) "
             "VALUES (?, ?, ?)"
         )
-        with self.conn:
-            self.conn.execute(sql, (source_name, secucode, last_notice_date))
+        self.conn.execute(sql, (source_name, secucode, last_notice_date))
 
     # ------------------------------------------------------------------
     # 质量报告
@@ -463,28 +462,51 @@ class Repository:
         P2 #6 修复：无原始证据时 evidence_sufficient 默认为 0；哈希必须由调用方提供有效值。
         返回 version_id（UUID）。
         """
-        # P2 #6：无 snapshot_id 时 evidence_sufficient 必须为 0
+        # R5 修复：证据充分性校验
+        # 默认无 snapshot 时 evidence_sufficient=0
         if evidence_sufficient is None:
             evidence_sufficient = 0 if snapshot_id is None else 1
 
-        # P2 #6：哈希不能为空占位符，必须提供有效值
-        if metric_hash is None or metric_hash == "":
-            raise ValueError("metric_hash 必须提供有效值（空字符串或 None 不接受）")
-        if semantic_hash is None or semantic_hash == "":
-            raise ValueError("semantic_hash 必须提供有效值（空字符串或 None 不接受）")
+        # R5：显式声明充分时，必须有有效 snapshot_id
+        if evidence_sufficient == 1 and snapshot_id is None:
+            raise ValueError("evidence_sufficient=1 时必须提供有效 snapshot_id")
+
+        # R6 修复：哈希必须为有效 SHA-256 格式（64 字符十六进制）
+        if metric_hash is None or not isinstance(metric_hash, str) or len(metric_hash) != 64:
+            raise ValueError("metric_hash 必须为 64 字符十六进制字符串（SHA-256）")
+        if semantic_hash is None or not isinstance(semantic_hash, str) or len(semantic_hash) != 64:
+            raise ValueError("semantic_hash 必须为 64 字符十六进制字符串（SHA-256）")
 
         import uuid
 
-        # P5 #5：检查是否已存在相同 metric_hash + semantic_hash 的版本（同内容幂等）
+        # R2/R3 修复：检查是否已存在相同 metric_hash + semantic_hash 的版本（同内容幂等）
+        # 命中时恢复当前状态并保留观察关联，不丢弃新 snapshot
         existing = self.conn.execute("""
-            SELECT version_id FROM statement_version
+            SELECT version_id, is_superseded FROM statement_version
             WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
               AND metric_hash = ? AND semantic_hash = ?
+            ORDER BY observation_seq DESC LIMIT 1
         """, (secucode, report_date, table_type, source_name, metric_hash, semantic_hash)).fetchone()
 
         if existing is not None:
-            # 同内容已存在，返回现有 version_id，不创建新版本（幂等）
-            return existing[0]
+            existing_id = existing[0]
+            # R2：恢复当前状态（is_superseded=0），并将同组其余版本标记为已替代
+            if existing[1] == 1:
+                self.conn.execute("""
+                    UPDATE statement_version
+                    SET is_superseded = 0, superseded_by = NULL
+                    WHERE version_id = ?
+                """, (existing_id,))
+                # 同组内其余版本（含中间的 B）标记为已替代，指向恢复的 A
+                self.conn.execute("""
+                    UPDATE statement_version
+                    SET is_superseded = 1, superseded_by = ?
+                    WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
+                      AND version_id != ?
+                """, (existing_id, secucode, report_date, table_type, source_name, existing_id))
+            # R3：新 snapshot 仍保留关联（通过 raw_snapshot 表的外键或观察记录）
+            # 阶段 2 单一来源下，同内容重复观察不制造新版本，但调用方可通过外部记录关联
+            return existing_id
 
         # 获取下一 observation_seq
         cur = self.conn.execute("""

@@ -13,6 +13,11 @@ from fin_feature.storage.migrations import run_migrations
 from fin_feature.storage.repository import Repository
 
 
+def _hash(label: str) -> str:
+    """生成 64 字符 SHA-256 十六进制字符串（测试用，满足 R6 校验）。"""
+    return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+
 @pytest.fixture
 def repo():
     """创建带迁移的临时数据库和 Repository。"""
@@ -38,8 +43,8 @@ class TestStatementVersionCrud:
             report_date="2024-03-31",
             table_type="financial_indicator",
             standardized_fields=json.dumps({"total_operate_income": 1000000.0}),
-            metric_hash="abc123",
-            semantic_hash="abc123",
+            metric_hash=_hash("abc123"),
+            semantic_hash=_hash("abc123"),
         )
 
         row = conn.execute(
@@ -62,8 +67,8 @@ class TestStatementVersionCrud:
             report_date="2024-03-31",
             table_type="financial_indicator",
             standardized_fields=json.dumps({"total_operate_income": 1000000.0}),
-            metric_hash="hash_v1",
-            semantic_hash="hash_v1",
+            metric_hash=_hash("hash_v1"),
+            semantic_hash=_hash("hash_v1"),
         )
 
         # 第二版（内容变化）
@@ -72,8 +77,8 @@ class TestStatementVersionCrud:
             report_date="2024-03-31",
             table_type="financial_indicator",
             standardized_fields=json.dumps({"total_operate_income": 1200000.0}),
-            metric_hash="hash_v2",
-            semantic_hash="hash_v2",
+            metric_hash=_hash("hash_v2"),
+            semantic_hash=_hash("hash_v2"),
         )
 
         # 验证 v1 被替代
@@ -99,8 +104,8 @@ class TestStatementVersionCrud:
             report_date="2024-03-31",
             table_type="financial_indicator",
             standardized_fields=json.dumps({"total_operate_income": 1000000.0}),
-            metric_hash="same_hash",
-            semantic_hash="same_hash",
+            metric_hash=_hash("same_hash"),
+            semantic_hash=_hash("same_hash"),
         )
 
         # 第二次相同内容应返回相同 version_id（幂等）
@@ -109,8 +114,8 @@ class TestStatementVersionCrud:
             report_date="2024-03-31",
             table_type="financial_indicator",
             standardized_fields=json.dumps({"total_operate_income": 1000000.0}),
-            metric_hash="same_hash",
-            semantic_hash="same_hash",
+            metric_hash=_hash("same_hash"),
+            semantic_hash=_hash("same_hash"),
         )
 
         # 幂等：v1 == v2
@@ -123,6 +128,59 @@ class TestStatementVersionCrud:
         ).fetchone()
         assert rows[0] == 1
 
+    def test_a_b_a_recovery(self, repo):
+        """R2 修复：A→B→A 恢复当前状态。"""
+        r, conn, _ = repo
+
+        # A 版本：金额 100
+        v_a = r.create_statement_version(
+            secucode="000001.SZ",
+            report_date="2024-03-31",
+            table_type="financial_indicator",
+            standardized_fields=json.dumps({"total_operate_income": 1000000.0}),
+            metric_hash=_hash("hash_a"),
+            semantic_hash=_hash("hash_a"),
+        )
+
+        # B 版本：金额 120（内容变化）
+        v_b = r.create_statement_version(
+            secucode="000001.SZ",
+            report_date="2024-03-31",
+            table_type="financial_indicator",
+            standardized_fields=json.dumps({"total_operate_income": 1200000.0}),
+            metric_hash=_hash("hash_b"),
+            semantic_hash=_hash("hash_b"),
+        )
+
+        # A 再次出现：应恢复 A 为当前有效
+        v_a2 = r.create_statement_version(
+            secucode="000001.SZ",
+            report_date="2024-03-31",
+            table_type="financial_indicator",
+            standardized_fields=json.dumps({"total_operate_income": 1000000.0}),
+            metric_hash=_hash("hash_a"),
+            semantic_hash=_hash("hash_a"),
+        )
+
+        # v_a2 应等于 v_a（同一内容 ID）
+        assert v_a == v_a2
+
+        # A 应为当前有效（is_superseded=0）
+        row_a = conn.execute(
+            "SELECT is_superseded FROM statement_version WHERE version_id = ?", (v_a,)
+        ).fetchone()
+        assert row_a["is_superseded"] == 0
+
+        # B 应为已替代
+        row_b = conn.execute(
+            "SELECT is_superseded FROM statement_version WHERE version_id = ?", (v_b,)
+        ).fetchone()
+        assert row_b["is_superseded"] == 1
+
+        # get_latest 应返回 A
+        latest = r.get_latest_statement_version("000001.SZ", "2024-03-31", "financial_indicator")
+        assert latest["version_id"] == v_a
+
     def test_get_latest_statement_version(self, repo):
         """get_latest_statement_version 返回最新非替代版本。"""
         r, conn, _ = repo
@@ -133,16 +191,16 @@ class TestStatementVersionCrud:
             report_date="2024-03-31",
             table_type="financial_indicator",
             standardized_fields=json.dumps({"total_operate_income": 1000000.0}),
-            metric_hash="hash_v1",
-            semantic_hash="hash_v1",
+            metric_hash=_hash("hash_v1"),
+            semantic_hash=_hash("hash_v1"),
         )
         r.create_statement_version(
             secucode="000001.SZ",
             report_date="2024-03-31",
             table_type="financial_indicator",
             standardized_fields=json.dumps({"total_operate_income": 1200000.0}),
-            metric_hash="hash_v2",
-            semantic_hash="hash_v2",
+            metric_hash=_hash("hash_v2"),
+            semantic_hash=_hash("hash_v2"),
         )
 
         latest = r.get_latest_statement_version(
@@ -163,8 +221,8 @@ class TestStatementVersionCrud:
             report_date="2024-03-31",
             table_type="financial_indicator",
             standardized_fields=json.dumps({"total_operate_income": 1000000.0}),
-            metric_hash="hash_v1",
-            semantic_hash="hash_v1",
+            metric_hash=_hash("hash_v1"),
+            semantic_hash=_hash("hash_v1"),
         )
 
         # 直接尝试插入重复 observation_seq（绕过 repository）
@@ -174,8 +232,8 @@ class TestStatementVersionCrud:
                 (version_id, secucode, report_date, table_type, source_name,
                  metric_hash, semantic_hash, observation_seq, is_superseded)
                 VALUES ('test_v2', '000001.SZ', '2024-03-31', 'financial_indicator', 'eastmoney',
-                 'hash_v2', 'hash_v2', 1, 0)
-            """)
+                 ?, ?, 1, 0)
+            """, (_hash("hash_v2"), _hash("hash_v2")))
             conn.commit()
 
 
@@ -192,8 +250,8 @@ class TestSemanticHashChange:
             report_date="2024-03-31",
             table_type="financial_indicator",
             standardized_fields=json.dumps({"total_operate_income": 1000000.0}),
-            metric_hash="hash_cny",
-            semantic_hash="hash_cny",  # 实际应包含 currency
+            metric_hash=_hash("hash_cny"),
+            semantic_hash=_hash("hash_cny"),  # 实际应包含 currency
             currency="CNY",
         )
 
@@ -203,8 +261,8 @@ class TestSemanticHashChange:
             report_date="2024-03-31",
             table_type="financial_indicator",
             standardized_fields=json.dumps({"total_operate_income": 150000.0}),  # USD 值
-            metric_hash="hash_usd",  # 数值不同
-            semantic_hash="hash_usd",  # 语义不同（CNY vs USD）
+            metric_hash=_hash("hash_usd"),  # 数值不同
+            semantic_hash=_hash("hash_usd"),  # 语义不同（CNY vs USD）
             currency="USD",
         )
 
@@ -234,8 +292,8 @@ class TestGetLatestVersionsForReport:
                 report_date="2024-03-31",
                 table_type=table_type,
                 standardized_fields=json.dumps({"value": 100}),
-                metric_hash=f"hash_{table_type}",
-                semantic_hash=f"hash_{table_type}",
+                metric_hash=_hash(f"hash_{table_type}"),
+                semantic_hash=_hash(f"hash_{table_type}"),
             )
 
         result = r.get_latest_versions_for_report("000001.SZ", "2024-03-31")

@@ -15,7 +15,7 @@ from fin_feature.storage.schema import (
 
 
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
-    """确保 schema_version 表存在（首次迁移用）。"""
+    """确保 schema_version 表存在（首次迁移用）。R7 修复：不提交外层事务。"""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_version (
             version         INTEGER PRIMARY KEY,
@@ -23,7 +23,7 @@ def _ensure_schema_version_table(conn: sqlite3.Connection) -> None:
             applied_at      TEXT DEFAULT (datetime('now', 'localtime'))
         )
     """)
-    conn.commit()
+    # 不提交，由 _apply_migration 或调用方控制事务
 
 
 def _get_current_version(conn: sqlite3.Connection) -> int:
@@ -39,17 +39,23 @@ def _get_current_version(conn: sqlite3.Connection) -> int:
 def _apply_migration(conn: sqlite3.Connection, version: int, name: str, fn: Callable) -> None:
     """在显式事务中执行迁移，失败回滚不残留 DDL 或数据变更。
 
-    P1 #2 修复：SQLite 的 DDL 默认自动提交，需要用 savepoint 确保回滚有效。
+    R7 修复：支持嵌入外层事务，只管理自己的 savepoint，不提交外层数据。
     """
+    in_transaction = conn.in_transaction  # 检查是否已有外层事务
+
     conn.execute("SAVEPOINT migration_savepoint")
     try:
         fn(conn)
         conn.execute("INSERT INTO schema_version (version, name) VALUES (?, ?)", (version, name))
         conn.execute("RELEASE SAVEPOINT migration_savepoint")
-        conn.commit()
+        # R7：仅当无外层事务时才提交
+        if not in_transaction:
+            conn.commit()
     except Exception as e:
         conn.execute("ROLLBACK TO SAVEPOINT migration_savepoint")
-        conn.rollback()
+        # R7：仅当无外层事务时才回滚整个连接
+        if not in_transaction:
+            conn.rollback()
         raise RuntimeError(f"迁移 v{version} ({name}) 失败：{e}") from e
 
 
@@ -210,22 +216,37 @@ def _migrate_raw_to_statement_version(conn: sqlite3.Connection) -> None:
                 # 构造原始记录（用于标准化）
                 raw_record = {f: field_values[i] for i, f in enumerate(fields) if field_values[i] is not None}
 
-                # P1 #1：使用标准化入口转换
-                standardized_dict, diagnostics = standardize_record(raw_record, list(raw_record.keys()))
+                # R4 修复：迁移使用固定映射，不受运行时 _unit_overrides 影响
+                # 直接按 FIELD_UNITS 定义转换，不调用可能被 fixture 污染的 standardize_record
+                from fin_feature.features.standardize import FIELD_UNITS
 
-                # raw_fields：保留原计量值（P1 #1：原始证据可追溯）
+                standardized = {}
+                for f, v in raw_record.items():
+                    if v is None:
+                        continue
+                    unit = FIELD_UNITS.get(f, "passthrough")
+                    if unit in ("percent", "percent_ratio"):
+                        standardized[f] = v / 100.0
+                    elif unit in ("amount", "times", "passthrough", "self_computed"):
+                        standardized[f] = v
+                    elif unit == "unknown":
+                        # 单位未知，不转换，保留原值并记录诊断
+                        standardized[f] = None
+                    else:
+                        standardized[f] = v
+
+                # raw_fields：保留原计量值（R4：原始证据可追溯）
                 raw_fields_json = json.dumps(raw_record, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
 
                 # standardized_fields：标准单位值（过滤 None 值）
-                standardized_filtered = {k: v for k, v in standardized_dict.items() if v is not None}
+                standardized_filtered = {k: v for k, v in standardized.items() if v is not None}
                 standardized_json = json.dumps(standardized_filtered, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
 
-                # P1 #1：semantic_hash 必须包含语义维度（不能简化为 metric_hash）
-                # 阶段 2 单一来源 eastmoney，但需包含币种/范围/期间基准等
+                # R4 修复：semantic_hash 包含语义维度，currency 标 unknown（不推断 CNY）
                 semantic_payload = {
                     "standardized_fields": standardized_filtered,
                     "source_name": source_name,
-                    "currency": "CNY",  # A 股默认 CNY
+                    "currency": "unknown",  # 不推断，下游消费时明确
                     "consolidate_scope": "unknown",
                     "period_basis": "unknown",
                 }
