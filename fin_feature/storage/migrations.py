@@ -101,12 +101,14 @@ def migrate_v2_stage2(conn: sqlite3.Connection) -> None:
         DDL_INGEST_RUN,
         DDL_RAW_SNAPSHOT,
         DDL_STATEMENT_VERSION,
+        DDL_STATEMENT_OBSERVATION,
         DDL_RECONCILIATION_RESULT,
         DDL_FEATURE_COMPUTE_LOG,
     )
 
     for ddl in [DDL_INGEST_RUN, DDL_RAW_SNAPSHOT, DDL_STATEMENT_VERSION,
-                DDL_RECONCILIATION_RESULT, DDL_FEATURE_COMPUTE_LOG]:
+                DDL_STATEMENT_OBSERVATION, DDL_RECONCILIATION_RESULT,
+                DDL_FEATURE_COMPUTE_LOG]:
         conn.execute(ddl)
 
     # features 加 6 列（幂等）
@@ -145,23 +147,26 @@ def _add_features_columns(conn: sqlite3.Connection) -> None:
 def _migrate_raw_to_statement_version(conn: sqlite3.Connection) -> None:
     """旧 raw_* 数据迁移到 statement_version。
 
-    P1 #1 修复：复用标准化入口，区分 raw_fields（原计量）和 standardized_fields（标准单位）。
+    R4-a/R4-b 修复：复用统一标准化入口 standardize_record（传入固定 unit_map），
+    保留有限数检查与非法输入处理；currency 统一标 unknown（不推断 CNY），
+    哈希与 INSERT 使用同一规范化对象，避免两套字面值漂移。
+
     约束：
     - evidence_sufficient=0（无原始响应，不编造）
     - snapshot_id=NULL、run_id=NULL（不编造采集批次）
     - observed_at 用 crawled_at（若为 NULL 则用迁移时间）
-    - metric_hash/semantic_hash 用标准化字段 + 语义维度计算
+    - metric_hash/semantic_hash 用 hashing 模块统一计算
     - observation_seq 按 (secucode, report_date, table_type, source_name) 分组排序
     - is_superseded：同组内仅最新为 0，其余为 1
     - revision_type：统一标 unknown（不编造修订类型）
     - 旧 raw_* 表数据保留不删除（复制不是移动）
     """
-    import hashlib
     import json
     from datetime import datetime
 
-    # 导入标准化入口（P1 #1 修复：复用统一转换逻辑）
-    from fin_feature.features.standardize import standardize_record
+    # R4-b 修复：使用统一标准化入口，传入固定 unit_map（不受运行时 _unit_overrides 污染）
+    from fin_feature.features.standardize import standardize_record, FIELD_UNITS
+    from fin_feature.storage.hashing import compute_metric_hash, compute_semantic_hash, canonical_json
 
     migration_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -216,45 +221,35 @@ def _migrate_raw_to_statement_version(conn: sqlite3.Connection) -> None:
                 # 构造原始记录（用于标准化）
                 raw_record = {f: field_values[i] for i, f in enumerate(fields) if field_values[i] is not None}
 
-                # R4 修复：迁移使用固定映射，不受运行时 _unit_overrides 影响
-                # 直接按 FIELD_UNITS 定义转换，不调用可能被 fixture 污染的 standardize_record
-                from fin_feature.features.standardize import FIELD_UNITS
-
-                standardized = {}
-                for f, v in raw_record.items():
-                    if v is None:
-                        continue
-                    unit = FIELD_UNITS.get(f, "passthrough")
-                    if unit in ("percent", "percent_ratio"):
-                        standardized[f] = v / 100.0
-                    elif unit in ("amount", "times", "passthrough", "self_computed"):
-                        standardized[f] = v
-                    elif unit == "unknown":
-                        # 单位未知，不转换，保留原值并记录诊断
-                        standardized[f] = None
-                    else:
-                        standardized[f] = v
+                # R4-b 修复：调用统一标准化入口，传入固定 unit_map
+                # 保留有限数检查（NaN/Inf → None + invalid_value）、布尔检查、未知单位处理
+                standardized_dict, _diagnostics = standardize_record(
+                    raw_record, list(raw_record.keys()), unit_map=FIELD_UNITS
+                )
 
                 # raw_fields：保留原计量值（R4：原始证据可追溯）
-                raw_fields_json = json.dumps(raw_record, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+                # R4-b：非有限值（NaN/Inf）无法 JSON 序列化，转为可逆字符串标记
+                import math
+                raw_fields_safe = {}
+                for f, v in raw_record.items():
+                    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                        raw_fields_safe[f] = str(v)  # "inf"/"-inf"/"nan"，可逆
+                    else:
+                        raw_fields_safe[f] = v
+                raw_fields_json = canonical_json(raw_fields_safe)
 
                 # standardized_fields：标准单位值（过滤 None 值）
-                standardized_filtered = {k: v for k, v in standardized.items() if v is not None}
-                standardized_json = json.dumps(standardized_filtered, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+                standardized_filtered = {k: v for k, v in standardized_dict.items() if v is not None}
+                standardized_json = canonical_json(standardized_filtered)
 
-                # R4 修复：semantic_hash 包含语义维度，currency 标 unknown（不推断 CNY）
-                semantic_payload = {
-                    "standardized_fields": standardized_filtered,
-                    "source_name": source_name,
-                    "currency": "unknown",  # 不推断，下游消费时明确
-                    "consolidate_scope": "unknown",
-                    "period_basis": "unknown",
-                }
-                semantic_serialized = json.dumps(semantic_payload, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
-                semantic_hash = hashlib.sha256(semantic_serialized.encode("utf-8")).hexdigest()
-
-                # metric_hash：仅标准化字段值
-                metric_hash = hashlib.sha256(standardized_json.encode("utf-8")).hexdigest()
+                # R4-a 修复：currency 统一标 unknown（不推断 CNY），哈希与 INSERT 使用同一值
+                currency = "unknown"
+                metric_hash = compute_metric_hash(standardized_filtered)
+                semantic_hash = compute_semantic_hash(
+                    standardized_filtered,
+                    source_name=source_name,
+                    currency=currency,
+                )
 
                 # is_superseded：仅最新为 0
                 is_superseded = 0 if seq == len(rows) else 1
@@ -284,7 +279,7 @@ def _migrate_raw_to_statement_version(conn: sqlite3.Connection) -> None:
                     seq,  # observation_seq
                     "unknown",  # consolidate_scope
                     "unknown",  # period_basis
-                    "CNY",  # currency（A 股默认）
+                    currency,  # currency（与哈希一致：unknown）
                     "unknown",  # amount_unit
                     "unknown",  # industry_type
                     standardized_json,  # standardized_fields（标准单位）

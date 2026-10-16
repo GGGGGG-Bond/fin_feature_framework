@@ -326,7 +326,7 @@ CREATE TABLE IF NOT EXISTS raw_snapshot (
 DDL_STATEMENT_VERSION = """
 CREATE TABLE IF NOT EXISTS statement_version (
     version_id           TEXT PRIMARY KEY,          -- UUID
-    snapshot_id          TEXT,                       -- 关联原始响应（旧数据迁移为 NULL）
+    snapshot_id          TEXT,                       -- 关联原始响应（旧数据迁移为 NULL；R3 后仅记录首次观察的 snapshot）
     run_id               TEXT,                       -- 关联采集批次（旧数据迁移为 NULL）
     secucode             TEXT NOT NULL,
     report_date          TEXT NOT NULL,
@@ -346,12 +346,31 @@ CREATE TABLE IF NOT EXISTS statement_version (
     industry_type        TEXT DEFAULT 'unknown',    -- industrial/financial/unknown
     standardized_fields  TEXT,                      -- JSON: 标准化字段快照
     raw_fields           TEXT,                      -- JSON: 原始字段快照（映射后）
-    evidence_sufficient  INTEGER DEFAULT 1,         -- 1=有原始响应；0=旧数据迁移（无原始响应）
+    evidence_sufficient  INTEGER DEFAULT 0,         -- 0=证据不足（默认）；1=有原始响应且来源一致
     is_superseded        INTEGER DEFAULT 0,         -- 0=当前有效；1=已被新版本替代
     superseded_by        TEXT,                      -- 指向替代版本 version_id
     FOREIGN KEY (snapshot_id) REFERENCES raw_snapshot(snapshot_id),
     FOREIGN KEY (run_id) REFERENCES ingest_run(run_id),
+    -- R5：声明证据充分时必须有 snapshot_id
+    CHECK (evidence_sufficient = 0 OR snapshot_id IS NOT NULL),
+    -- R6：哈希必须为 64 字符十六进制 SHA-256
+    CHECK (length(metric_hash) = 64 AND metric_hash GLOB '[0-9a-f]*'),
+    CHECK (length(semantic_hash) = 64 AND semantic_hash GLOB '[0-9a-f]*'),
     UNIQUE (secucode, report_date, table_type, source_name, observation_seq)
+);
+"""
+
+# 4b. 观察关系（R3 修复）：同一版本可被多次观察，每次观察关联一个 snapshot
+DDL_STATEMENT_OBSERVATION = """
+CREATE TABLE IF NOT EXISTS statement_observation (
+    observation_id   TEXT PRIMARY KEY,             -- UUID
+    version_id       TEXT NOT NULL,                 -- 关联版本
+    snapshot_id      TEXT,                          -- 关联原始响应（旧数据迁移为 NULL）
+    run_id           TEXT,                          -- 关联采集批次（旧数据迁移为 NULL）
+    observed_at      TEXT DEFAULT (datetime('now', 'localtime')),  -- 本次观察时间
+    FOREIGN KEY (version_id) REFERENCES statement_version(version_id),
+    FOREIGN KEY (snapshot_id) REFERENCES raw_snapshot(snapshot_id),
+    FOREIGN KEY (run_id) REFERENCES ingest_run(run_id)
 );
 """
 
@@ -417,6 +436,8 @@ ALL_INDEXES_STAGE2 = [
     "CREATE INDEX IF NOT EXISTS idx_ingest_run_status ON ingest_run(status);",
     "CREATE INDEX IF NOT EXISTS idx_fcl_lookup ON feature_compute_log(secucode, report_date, feature_name);",
     "CREATE INDEX IF NOT EXISTS idx_fcl_run ON feature_compute_log(compute_run_id);",
+    "CREATE INDEX IF NOT EXISTS idx_so_version ON statement_observation(version_id);",
+    "CREATE INDEX IF NOT EXISTS idx_so_snapshot ON statement_observation(snapshot_id);",
 ]
 
 # 更新 ALL_DDL（按依赖顺序，供 migrate_v1_baseline 使用）
@@ -437,6 +458,7 @@ ALL_DDL = [
     DDL_INGEST_RUN,
     DDL_RAW_SNAPSHOT,
     DDL_STATEMENT_VERSION,
+    DDL_STATEMENT_OBSERVATION,
     DDL_RECONCILIATION_RESULT,
     DDL_FEATURE_COMPUTE_LOG,
 ]

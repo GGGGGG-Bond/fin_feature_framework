@@ -1,0 +1,174 @@
+# 数据模型与 DDL 契约
+
+契约版本：stage2-v1。源码：`fin_feature/storage/schema.py`。
+
+## 新增表（6 张）
+
+### 1. schema_version（迁移版本管理）
+
+```sql
+CREATE TABLE IF NOT EXISTS schema_version (
+    version         INTEGER PRIMARY KEY,
+    name            TEXT NOT NULL,
+    applied_at      TEXT DEFAULT (datetime('now', 'localtime'))
+);
+```
+
+### 2. ingest_run（采集批次）
+
+```sql
+CREATE TABLE IF NOT EXISTS ingest_run (
+    run_id          TEXT PRIMARY KEY,
+    source_name     TEXT NOT NULL,
+    request_scope   TEXT,
+    started_at      TEXT DEFAULT (datetime('now', 'localtime')),
+    ended_at        TEXT,
+    status          TEXT NOT NULL DEFAULT 'running',
+    failed_units    INTEGER DEFAULT 0,
+    crawler_version TEXT,
+    detail          TEXT
+);
+```
+
+### 3. raw_snapshot（原始响应留存）
+
+```sql
+CREATE TABLE IF NOT EXISTS raw_snapshot (
+    snapshot_id      TEXT PRIMARY KEY,
+    run_id           TEXT NOT NULL,
+    source_name      TEXT NOT NULL,
+    report_name      TEXT NOT NULL,
+    secucode         TEXT,
+    page_number      INTEGER,
+    request_params   TEXT,
+    fetched_at       TEXT DEFAULT (datetime('now', 'localtime')),
+    raw_content_hash TEXT NOT NULL,
+    file_path        TEXT NOT NULL,
+    record_count     INTEGER,
+    FOREIGN KEY (run_id) REFERENCES ingest_run(run_id)
+);
+```
+
+### 4. statement_version（标准化版本与血缘 — 核心表）
+
+```sql
+CREATE TABLE IF NOT EXISTS statement_version (
+    version_id           TEXT PRIMARY KEY,
+    snapshot_id          TEXT,
+    run_id               TEXT,
+    secucode             TEXT NOT NULL,
+    report_date          TEXT NOT NULL,
+    table_type           TEXT NOT NULL,
+    source_name          TEXT NOT NULL DEFAULT 'eastmoney',
+    notice_date          TEXT,
+    revision_notice_date TEXT,
+    revision_type        TEXT DEFAULT 'unknown',
+    observed_at          TEXT DEFAULT (datetime('now', 'localtime')),
+    metric_hash          TEXT NOT NULL,
+    semantic_hash        TEXT NOT NULL,
+    observation_seq      INTEGER NOT NULL,
+    consolidate_scope    TEXT DEFAULT 'unknown',
+    period_basis         TEXT DEFAULT 'unknown',
+    currency             TEXT DEFAULT 'unknown',
+    amount_unit          TEXT DEFAULT 'unknown',
+    industry_type        TEXT DEFAULT 'unknown',
+    standardized_fields  TEXT,
+    raw_fields           TEXT,
+    evidence_sufficient  INTEGER DEFAULT 0,
+    is_superseded        INTEGER DEFAULT 0,
+    superseded_by        TEXT,
+    FOREIGN KEY (snapshot_id) REFERENCES raw_snapshot(snapshot_id),
+    FOREIGN KEY (run_id) REFERENCES ingest_run(run_id),
+    CHECK (evidence_sufficient = 0 OR snapshot_id IS NOT NULL),
+    CHECK (length(metric_hash) = 64 AND metric_hash GLOB '[0-9a-f]*'),
+    CHECK (length(semantic_hash) = 64 AND semantic_hash GLOB '[0-9a-f]*'),
+    UNIQUE (secucode, report_date, table_type, source_name, observation_seq)
+);
+```
+
+**R5 修复**：`evidence_sufficient` 默认 0（非 1），CHECK 约束确保声明充分时必须有 snapshot_id。
+**R6 修复**：CHECK 约束确保 metric_hash/semantic_hash 为 64 字符十六进制。
+
+### 5. statement_observation（观察关系 — R3 修复）
+
+```sql
+CREATE TABLE IF NOT EXISTS statement_observation (
+    observation_id   TEXT PRIMARY KEY,
+    version_id       TEXT NOT NULL,
+    snapshot_id      TEXT,
+    run_id           TEXT,
+    observed_at      TEXT DEFAULT (datetime('now', 'localtime')),
+    FOREIGN KEY (version_id) REFERENCES statement_version(version_id),
+    FOREIGN KEY (snapshot_id) REFERENCES raw_snapshot(snapshot_id),
+    FOREIGN KEY (run_id) REFERENCES ingest_run(run_id)
+);
+```
+
+**R3 修复**：同一版本可被多次观察，每次观察关联一个 snapshot。同内容重复观察不制造新版本，但通过本表保存观察与 snapshot 的关联。
+
+### 6. feature_compute_log（不可变计算记录）
+
+```sql
+CREATE TABLE IF NOT EXISTS feature_compute_log (
+    result_id           TEXT PRIMARY KEY,
+    compute_run_id      TEXT NOT NULL,
+    secucode            TEXT NOT NULL,
+    report_date         TEXT NOT NULL,
+    feature_name        TEXT NOT NULL,
+    definition_version  TEXT NOT NULL,
+    input_version_ids   TEXT NOT NULL,
+    feature_value       REAL,
+    not_computable_reason TEXT,
+    code_commit         TEXT,
+    config_snapshot     TEXT,
+    as_of_date          TEXT,
+    computed_at         TEXT DEFAULT (datetime('now', 'localtime'))
+);
+```
+
+注：`compute_run_id` 无外键约束（compute_run ≠ ingest_run，R4 修复）。
+
+### 7. reconciliation_result（双源核验，阶段 3 预留）
+
+结构见 `schema.py`，阶段 2 仅建表不写入。
+
+## features 表加列（6 列，幂等）
+
+```sql
+ALTER TABLE features ADD COLUMN compute_run_id TEXT;
+ALTER TABLE features ADD COLUMN input_version_ids TEXT;
+ALTER TABLE features ADD COLUMN code_commit TEXT;
+ALTER TABLE features ADD COLUMN config_hash TEXT;
+ALTER TABLE features ADD COLUMN as_of_date TEXT;
+ALTER TABLE features ADD COLUMN not_computable_reason TEXT;
+```
+
+## 哈希计算规范
+
+源码：`fin_feature/storage/hashing.py`。
+
+- **序列化**：`json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(',', ':'), allow_nan=False)`
+- **算法**：SHA-256
+- **metric_hash**：仅标准化字段值（过滤 None）
+- **semantic_hash**：字段值 + source_name + currency + consolidate_scope + period_basis + amount_unit + industry_type
+- **R6 修复**：Repository 内部调用 `compute_metric_hash`/`compute_semantic_hash` 计算哈希，不接受调用方提供的哈希值，确保哈希与负载一致
+
+## 事务所有权（R1 修复）
+
+源码：`fin_feature/storage/repository.py`。
+
+- 所有写入方法不自行提交（移除 `with self.conn`）
+- `Repository.unit_of_work()` 上下文管理器：成功提交，异常回滚
+- `Repository.commit()` / `Repository.rollback()` 显式控制
+- 增量采集单元（raw + 水位）在 `unit_of_work` 中原子提交
+
+## 四种时间语义
+
+| 字段 | 含义 |
+|---|---|
+| report_date | 报告期（财务数据所属期间） |
+| notice_date | 公告时间（数据首次发布） |
+| revision_notice_date | 修订公告时间（修订发布，未知为 NULL） |
+| observed_at | 系统观察时间（本系统记录时间） |
+
+不得混用过滤水位。水位（crawl_watermark.last_notice_date）用于诊断和修订检测，不用于报告期过滤。

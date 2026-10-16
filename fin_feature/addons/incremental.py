@@ -133,15 +133,25 @@ def crawl_incremental(
 
             # 字段映射
             mapped = [map_fields(r, report_name) for r in records]
-            written = repo.batch_upsert_raw(table_suffix, mapped)
-            new_count += written
 
-            # 更新水位（取最新 notice_date）
-            latest_notice = max(
-                (r.get("NOTICE_DATE") or r.get("notice_date") or "") for r in records
-            )
-            if latest_notice:
-                repo.update_watermark(report_name, secucode, latest_notice[:10])
+            # R1 修复：成功单元原子提交 raw + 水位
+            # 所有写入方法不自行提交（见 repository.py），由 unit_of_work 统一提交/回滚。
+            try:
+                with repo.unit_of_work():
+                    written = repo.batch_upsert_raw(table_suffix, mapped)
+                    new_count += written
+
+                    # 更新水位（取最新 notice_date）
+                    latest_notice = max(
+                        (r.get("NOTICE_DATE") or r.get("notice_date") or "") for r in records
+                    )
+                    if latest_notice:
+                        repo.update_watermark(report_name, secucode, latest_notice[:10])
+            except Exception as exc:
+                # 单元内写入失败：unit_of_work 自动回滚，不残留部分数据
+                logger.error("增量写入 %s %s 失败（单元回滚）：%s", secucode, report_name, exc)
+                failed_units += 1
+                continue
 
         stats[report_name] = new_count
         logger.info("增量爬取 %s: 新增 %d 条", report_name, new_count)

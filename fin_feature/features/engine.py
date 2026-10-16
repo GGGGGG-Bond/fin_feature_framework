@@ -449,7 +449,8 @@ def compute_all(repo: Repository, groups: list[str] | None = None) -> int:
             reason_counts[reason] = reason_counts.get(reason, 0) + 1
 
     # 批量写入
-    written = repo.batch_upsert_features(feature_records)
+    with repo.unit_of_work():
+        written = repo.batch_upsert_features(feature_records)
     logger.info("特征计算完成，共写入 %d 条特征记录", written)
     if reason_counts:
         logger.info("诊断原因统计: %s", reason_counts)

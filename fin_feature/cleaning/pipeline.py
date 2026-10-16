@@ -69,46 +69,50 @@ def clean_table(
     """清洗单张表的全部原始记录。
 
     流程：去重 → 异常值检测 → 缺失值处理 → 时间对齐 → 写入清洗表
+
+    R1 修复：全部清洗写入（日志、失效、upsert）在同一 unit_of_work 中提交，
+    失败一起回滚，不残留部分清洗结果。
     """
     stats = CleanStats(table_suffix=table_suffix, raw_count=len(raw_records))
 
-    # 1. 去重
-    deduped = deduplicate(repo, table_suffix, raw_records)
-    stats.dedup_count = len(deduped)
-    stats.actions["dedup"] = stats.raw_count - stats.dedup_count
+    with repo.unit_of_work():
+        # 1. 去重
+        deduped = deduplicate(repo, table_suffix, raw_records)
+        stats.dedup_count = len(deduped)
+        stats.actions["dedup"] = stats.raw_count - stats.dedup_count
 
-    # 2-4. 逐条清洗
-    clean_records: list[dict] = []
-    for record in deduped:
-        # 保存键用于 drop 时失效旧数据
-        secucode = record.get("secucode", "")
-        report_date = record.get("report_date", "")
-        # 异常值检测与修正
-        record = detect_and_fix(repo, table_suffix, record)
-        # 缺失值处理（可能丢弃记录）
-        record = handle_missing(repo, table_suffix, record)
-        if record is None:
-            stats.dropped_count += 1
-            # stage1-v1: 最新输入被 drop，同步失效旧 clean 及依赖特征
-            if secucode and report_date:
-                repo.invalidate_clean(table_suffix, secucode, report_date)
-                repo.invalidate_features(secucode, report_date)
-                repo.log_clean_action(
-                    secucode, report_date, table_suffix, "invalidated_on_drop",
-                    "核心字段缺失，记录被 drop，失效旧 clean 及依赖特征",
-                )
-            continue
-        # 时间对齐
-        record = align_time(repo, table_suffix, record)
-        # 筛选清洗表字段
-        clean_record = _project_fields(record, table_suffix)
-        clean_records.append(clean_record)
+        # 2-4. 逐条清洗
+        clean_records: list[dict] = []
+        for record in deduped:
+            # 保存键用于 drop 时失效旧数据
+            secucode = record.get("secucode", "")
+            report_date = record.get("report_date", "")
+            # 异常值检测与修正
+            record = detect_and_fix(repo, table_suffix, record)
+            # 缺失值处理（可能丢弃记录）
+            record = handle_missing(repo, table_suffix, record)
+            if record is None:
+                stats.dropped_count += 1
+                # stage1-v1: 最新输入被 drop，同步失效旧 clean 及依赖特征
+                if secucode and report_date:
+                    repo.invalidate_clean(table_suffix, secucode, report_date)
+                    repo.invalidate_features(secucode, report_date)
+                    repo.log_clean_action(
+                        secucode, report_date, table_suffix, "invalidated_on_drop",
+                        "核心字段缺失，记录被 drop，失效旧 clean 及依赖特征",
+                    )
+                continue
+            # 时间对齐
+            record = align_time(repo, table_suffix, record)
+            # 筛选清洗表字段
+            clean_record = _project_fields(record, table_suffix)
+            clean_records.append(clean_record)
 
-    stats.clean_count = len(clean_records)
+        stats.clean_count = len(clean_records)
 
-    # 写入清洗表
-    for record in clean_records:
-        repo.upsert_clean(table_suffix, record)
+        # 写入清洗表
+        for record in clean_records:
+            repo.upsert_clean(table_suffix, record)
 
     logger.info(
         "表 %s 清洗完成: 原始 %d -> 去重 %d -> 丢弃 %d -> 清洗后 %d",

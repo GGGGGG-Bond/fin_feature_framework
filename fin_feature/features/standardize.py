@@ -75,7 +75,7 @@ def get_unit(field: str) -> str:
     return FIELD_UNITS.get(field, "passthrough")
 
 
-def standardize(field: str, value) -> tuple[float | None, str | None]:
+def standardize(field: str, value, unit_map: dict[str, str] | None = None) -> tuple[float | None, str | None]:
     """将原值标准化为运行时标准单位。
 
     返回 (standard_value, reason_code)。
@@ -83,6 +83,9 @@ def standardize(field: str, value) -> tuple[float | None, str | None]:
     - 原值为 None: (None, "missing_input")
     - 单位未知: (None, "unknown_unit")
     - 非有限数: (None, "invalid_value")
+
+    unit_map: 显式固定单位映射（优先于 _unit_overrides 和 FIELD_UNITS）。
+    供迁移等需要确定性、不受运行时 fixture 污染的场景使用。
     """
     import math
 
@@ -103,7 +106,10 @@ def standardize(field: str, value) -> tuple[float | None, str | None]:
     if math.isnan(num) or math.isinf(num):
         return (None, "invalid_value")
 
-    unit = get_unit(field)
+    if unit_map is not None:
+        unit = unit_map.get(field, "passthrough")
+    else:
+        unit = get_unit(field)
 
     if unit in ("percent", "percent_ratio"):
         # 百分数 -> 小数，只转换一次
@@ -122,7 +128,8 @@ def standardize(field: str, value) -> tuple[float | None, str | None]:
 
 
 def standardize_record(
-    record: dict, fields: list[str] | None = None
+    record: dict, fields: list[str] | None = None,
+    unit_map: dict[str, str] | None = None,
 ) -> tuple[dict, list[dict]]:
     """标准化记录中的多个字段。
 
@@ -137,7 +144,7 @@ def standardize_record(
 
     for f in fields:
         original = record.get(f)
-        std_val, reason = standardize(f, original)
+        std_val, reason = standardize(f, original, unit_map=unit_map)
         standardized[f] = std_val
         if reason is not None and reason != "missing_input":
             # missing_input 是常见情况，不单独诊断（特征层处理）

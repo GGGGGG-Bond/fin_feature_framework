@@ -9,8 +9,31 @@ from typing import Any, Iterable
 from fin_feature.constants import CLEAN_TABLES, RAW_TABLES
 
 
+class _UnitOfWork:
+    """事务上下文管理器：成功提交，异常回滚。
+
+    R1 修复：为 Repository 提供明确的事务所有权边界，使多个写入可组合为原子单元。
+    """
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def __enter__(self) -> "_UnitOfWork":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if exc_type is None:
+            self._conn.commit()
+        else:
+            self._conn.rollback()
+
+
 class Repository:
-    """统一的数据访问层，封装所有表的 CRUD 与查询。"""
+    """统一的数据访问层，封装所有表的 CRUD 与查询。
+
+    R1 修复：所有写入方法不自行提交（移除 with self.conn），事务由调用方通过
+    unit_of_work() 或显式 commit() 控制。这使多个写入可组合为原子单元。
+    """
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
@@ -23,11 +46,32 @@ class Repository:
             self._table_columns_cache[table] = {r[1] for r in rows}
         return self._table_columns_cache[table]
 
+    def unit_of_work(self):
+        """事务上下文管理器：成功时提交，异常时回滚。
+
+        R1 修复：提供明确的事务所有权边界。多个写入方法可在同一 unit_of_work
+        中组合为原子单元，失败一起回滚。
+
+        用法：
+            with repo.unit_of_work():
+                repo.batch_upsert_raw(...)
+                repo.update_watermark(...)
+        """
+        return _UnitOfWork(self.conn)
+
+    def commit(self) -> None:
+        """显式提交当前事务。"""
+        self.conn.commit()
+
+    def rollback(self) -> None:
+        """显式回滚当前事务。"""
+        self.conn.rollback()
+
     # ------------------------------------------------------------------
     # 原始数据写入
     # ------------------------------------------------------------------
     def upsert_stock_list(self, records: Iterable[dict]) -> int:
-        """批量写入股票列表。"""
+        """批量写入股票列表。R1 修复：不自行提交。"""
         rows = list(records)
         if not rows:
             return 0
@@ -36,8 +80,7 @@ class Repository:
             "(secucode, security_code, security_name, market) "
             "VALUES (:secucode, :security_code, :security_name, :market)"
         )
-        with self.conn:
-            self.conn.executemany(sql, rows)
+        self.conn.executemany(sql, rows)
         return len(rows)
 
     def batch_upsert_raw(self, table_suffix: str, records: Iterable[dict]) -> int:
@@ -59,8 +102,7 @@ class Repository:
         sql = f"INSERT OR REPLACE INTO {table} ({col_list}) VALUES ({placeholders})"
         # 过滤每行，只保留有效列
         filtered = [{c: r.get(c) for c in cols} for r in rows]
-        with self.conn:
-            self.conn.executemany(sql, filtered)
+        self.conn.executemany(sql, filtered)
         return len(rows)
 
     # ------------------------------------------------------------------
@@ -99,7 +141,7 @@ class Repository:
     # 清洗数据写入与查询
     # ------------------------------------------------------------------
     def upsert_clean(self, table_suffix: str, record: dict) -> None:
-        """upsert 单条清洗后数据。"""
+        """upsert 单条清洗后数据。R1 修复：不自行提交。"""
         table = CLEAN_TABLES[table_suffix]
         table_cols = self._get_table_columns(table)
         cols = [c for c in record.keys() if c in table_cols]
@@ -109,36 +151,33 @@ class Repository:
         col_list = ", ".join(cols)
         sql = f"INSERT OR REPLACE INTO {table} ({col_list}) VALUES ({placeholders})"
         filtered = {c: record.get(c) for c in cols}
-        with self.conn:
-            self.conn.execute(sql, filtered)
+        self.conn.execute(sql, filtered)
 
     def invalidate_clean(
         self, table_suffix: str, secucode: str, report_date: str
     ) -> None:
-        """失效某公司某报告期的清洗记录。
+        """失效某公司某报告期的清洗记录。R1 修复：不自行提交。
 
         stage1-v1: 最新输入被 drop 时，同步失效旧 clean 数据，避免陈旧值残留。
         """
         table = CLEAN_TABLES[table_suffix]
-        with self.conn:
-            self.conn.execute(
-                f"DELETE FROM {table} WHERE secucode = ? AND report_date = ?",
-                (secucode, report_date),
-            )
+        self.conn.execute(
+            f"DELETE FROM {table} WHERE secucode = ? AND report_date = ?",
+            (secucode, report_date),
+        )
 
     def invalidate_features(self, secucode: str, report_date: str) -> None:
-        """失效某公司某报告期的特征记录。
+        """失效某公司某报告期的特征记录。R1 修复：不自行提交。
 
         stage1-v1: 仅失效当前定义版本（stage1-v1），保留 legacy 和其他版本。
         不能由 clean 的删除路径绕过写入端的 legacy 拒覆盖保护。
         """
-        with self.conn:
-            self.conn.execute(
-                "DELETE FROM features "
-                "WHERE secucode = ? AND report_date = ? "
-                "AND definition_version = 'stage1-v1'",
-                (secucode, report_date),
-            )
+        self.conn.execute(
+            "DELETE FROM features "
+            "WHERE secucode = ? AND report_date = ? "
+            "AND definition_version = 'stage1-v1'",
+            (secucode, report_date),
+        )
 
     def get_clean_by_company(
         self, table_suffix: str, secucode: str
@@ -216,8 +255,7 @@ class Repository:
             "(secucode, report_date, feature_name, feature_value, feature_group, definition_version) "
             "VALUES (?, ?, ?, ?, ?, ?)"
         )
-        with self.conn:
-            self.conn.execute(sql, (secucode, report_date, feature_name, feature_value, feature_group, definition_version))
+        self.conn.execute(sql, (secucode, report_date, feature_name, feature_value, feature_group, definition_version))
 
     def batch_upsert_features(self, records: Iterable[dict]) -> int:
         """批量 upsert 特征。
@@ -260,8 +298,7 @@ class Repository:
             "(secucode, report_date, feature_name, feature_value, feature_group, definition_version) "
             "VALUES (:secucode, :report_date, :feature_name, :feature_value, :feature_group, :definition_version)"
         )
-        with self.conn:
-            self.conn.executemany(sql, safe_rows)
+        self.conn.executemany(sql, safe_rows)
         return len(safe_rows)
 
     def get_features(
@@ -315,13 +352,12 @@ class Repository:
         action: str,
         detail: str,
     ) -> None:
-        """记录一条清洗日志。"""
+        """记录一条清洗日志。R1 修复：不自行提交。"""
         sql = (
             "INSERT INTO clean_log (secucode, report_date, source_table, action, detail) "
             "VALUES (?, ?, ?, ?, ?)"
         )
-        with self.conn:
-            self.conn.execute(sql, (secucode, report_date, source_table, action, detail))
+        self.conn.execute(sql, (secucode, report_date, source_table, action, detail))
 
     def get_clean_logs(self, limit: int = 100) -> list[sqlite3.Row]:
         """查询最近的清洗日志。"""
@@ -351,13 +387,12 @@ class Repository:
     def save_quality_metric(
         self, table_name: str, metric_name: str, metric_value: float, detail: str = ""
     ) -> None:
-        """保存一条质量指标。"""
+        """保存一条质量指标。R1 修复：不自行提交。"""
         sql = (
             "INSERT INTO quality_report (table_name, metric_name, metric_value, detail) "
             "VALUES (?, ?, ?, ?)"
         )
-        with self.conn:
-            self.conn.execute(sql, (table_name, metric_name, metric_value, detail))
+        self.conn.execute(sql, (table_name, metric_name, metric_value, detail))
 
     def get_table_count(self, table_name: str) -> int:
         """获取某张表的总记录数。"""
@@ -459,28 +494,55 @@ class Repository:
     ) -> str:
         """创建标准化版本记录，处理 observation_seq 自增和旧版本替代。
 
-        P2 #6 修复：无原始证据时 evidence_sufficient 默认为 0；哈希必须由调用方提供有效值。
+        R3 修复：同内容重复观察不制造新版本，但通过 statement_observation 表保存
+        每次观察与 snapshot 的关联，与版本投影同事务写入。
+        R5 修复：evidence_sufficient=1 时校验 snapshot 的来源/公司/报表与版本一致。
+        R6 修复：哈希由 Repository 内部根据 standardized_fields 和语义维度统一计算，
+        不接受调用方任意提供的哈希值，确保哈希与负载一致。
+
         返回 version_id（UUID）。
         """
+        import json
+        import uuid
+
+        from fin_feature.storage.hashing import (
+            compute_metric_hash, compute_semantic_hash, is_valid_hash,
+        )
+
+        # R6 修复：内部计算哈希，不接受调用方提供的哈希值
+        # standardized_fields 必须提供（JSON 字符串）
+        if standardized_fields is None:
+            raise ValueError("standardized_fields 必须提供（用于计算哈希）")
+        try:
+            std_dict = json.loads(standardized_fields)
+        except (json.JSONDecodeError, TypeError) as e:
+            raise ValueError(f"standardized_fields 不是有效 JSON：{e}") from e
+
+        metric_hash = compute_metric_hash(std_dict)
+        semantic_hash = compute_semantic_hash(
+            std_dict,
+            source_name=source_name,
+            currency=currency,
+            consolidate_scope=consolidate_scope,
+            period_basis=period_basis,
+            amount_unit=amount_unit,
+            industry_type=industry_type,
+        )
+
         # R5 修复：证据充分性校验
         # 默认无 snapshot 时 evidence_sufficient=0
         if evidence_sufficient is None:
             evidence_sufficient = 0 if snapshot_id is None else 1
 
-        # R5：显式声明充分时，必须有有效 snapshot_id
-        if evidence_sufficient == 1 and snapshot_id is None:
-            raise ValueError("evidence_sufficient=1 时必须提供有效 snapshot_id")
-
-        # R6 修复：哈希必须为有效 SHA-256 格式（64 字符十六进制）
-        if metric_hash is None or not isinstance(metric_hash, str) or len(metric_hash) != 64:
-            raise ValueError("metric_hash 必须为 64 字符十六进制字符串（SHA-256）")
-        if semantic_hash is None or not isinstance(semantic_hash, str) or len(semantic_hash) != 64:
-            raise ValueError("semantic_hash 必须为 64 字符十六进制字符串（SHA-256）")
-
-        import uuid
+        # R5：显式声明充分时，必须有有效 snapshot_id 且来源/公司/报表一致
+        if evidence_sufficient == 1:
+            if snapshot_id is None:
+                raise ValueError("evidence_sufficient=1 时必须提供有效 snapshot_id")
+            self._verify_snapshot_consistency(
+                snapshot_id, source_name, secucode, table_type
+            )
 
         # R2/R3 修复：检查是否已存在相同 metric_hash + semantic_hash 的版本（同内容幂等）
-        # 命中时恢复当前状态并保留观察关联，不丢弃新 snapshot
         existing = self.conn.execute("""
             SELECT version_id, is_superseded FROM statement_version
             WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
@@ -504,8 +566,8 @@ class Repository:
                     WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
                       AND version_id != ?
                 """, (existing_id, secucode, report_date, table_type, source_name, existing_id))
-            # R3：新 snapshot 仍保留关联（通过 raw_snapshot 表的外键或观察记录）
-            # 阶段 2 单一来源下，同内容重复观察不制造新版本，但调用方可通过外部记录关联
+            # R3：同内容重复观察不制造新版本，但保存本次观察与 snapshot 的关联
+            self._record_observation(existing_id, snapshot_id, run_id)
             return existing_id
 
         # 获取下一 observation_seq
@@ -534,6 +596,9 @@ class Repository:
              industry_type, standardized_fields, raw_fields, evidence_sufficient),
         )
 
+        # R3：记录首次观察与 snapshot 的关联
+        self._record_observation(version_id, snapshot_id, run_id)
+
         # 标记旧版本为替代（同分组内仅最新为 0）
         self.conn.execute("""
             UPDATE statement_version
@@ -543,6 +608,72 @@ class Repository:
         """, (version_id, secucode, report_date, table_type, source_name, version_id))
 
         return version_id
+
+    def _verify_snapshot_consistency(
+        self, snapshot_id: str, source_name: str, secucode: str, table_type: str
+    ) -> None:
+        """R5 修复：校验 snapshot 的来源/公司/报表与版本一致。
+
+        snapshot 的 secucode 可为空（股票列表请求无公司），此时不校验公司。
+        report_name 与 table_type 的映射通过 REPORT_TO_TABLE_TYPE 完成。
+        """
+        from fin_feature.constants import REPORT_FINANCIAL_INDICATOR, REPORT_INCOME_STATEMENT, REPORT_BALANCE_SHEET
+
+        # table_type -> report_name 映射
+        TABLE_TYPE_TO_REPORT = {
+            "financial_indicator": REPORT_FINANCIAL_INDICATOR,
+            "income_statement": REPORT_INCOME_STATEMENT,
+            "balance_sheet": REPORT_BALANCE_SHEET,
+        }
+        expected_report = TABLE_TYPE_TO_REPORT.get(table_type)
+
+        row = self.conn.execute(
+            "SELECT source_name, secucode, report_name FROM raw_snapshot WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"snapshot_id={snapshot_id} 不存在于 raw_snapshot 表")
+
+        snap_source = row[0]
+        snap_secucode = row[1]
+        snap_report = row[2]
+
+        if snap_source != source_name:
+            raise ValueError(
+                f"snapshot 来源不一致：snapshot.source_name={snap_source}，版本 source_name={source_name}"
+            )
+        # secucode 可为空（股票列表请求无公司），非空时必须一致
+        if snap_secucode is not None and snap_secucode != secucode:
+            raise ValueError(
+                f"snapshot 公司不一致：snapshot.secucode={snap_secucode}，版本 secucode={secucode}"
+            )
+        if expected_report is not None and snap_report != expected_report:
+            raise ValueError(
+                f"snapshot 报表不一致：snapshot.report_name={snap_report}，版本 table_type={table_type}（期望 {expected_report}）"
+            )
+
+    def _record_observation(
+        self, version_id: str, snapshot_id: str | None, run_id: str | None
+    ) -> None:
+        """R3 修复：在 statement_observation 表记录本次观察与 snapshot 的关联。
+
+        snapshot_id 为 None 时不记录观察（旧数据迁移无原始响应）。
+        """
+        if snapshot_id is None:
+            return
+        import uuid
+        observation_id = str(uuid.uuid4())
+        self.conn.execute("""
+            INSERT INTO statement_observation (observation_id, version_id, snapshot_id, run_id)
+            VALUES (?, ?, ?, ?)
+        """, (observation_id, version_id, snapshot_id, run_id))
+
+    def get_observations_for_version(self, version_id: str) -> list[sqlite3.Row]:
+        """R3 修复：获取某版本的全部观察记录（含关联的 snapshot）。"""
+        return self.conn.execute("""
+            SELECT * FROM statement_observation WHERE version_id = ?
+            ORDER BY observed_at ASC
+        """, (version_id,)).fetchall()
 
     def get_latest_statement_version(
         self, secucode: str, report_date: str, table_type: str, source_name: str = "eastmoney"
