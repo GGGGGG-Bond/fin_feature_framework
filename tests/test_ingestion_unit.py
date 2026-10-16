@@ -1,0 +1,538 @@
+"""2B-1 验收矩阵 B13-B15：单元身份、跨表一致性与重复处理。
+
+对应 docs/stage-2/2b-test-matrix.md「2B-1：证据、模型与失败边界」。
+"""
+
+import json
+
+import pytest
+
+from fin_feature.ingestion.evidence import (
+    CaptureConflict,
+    compute_unit_key,
+    resolve_max_pages_per_unit,
+    UnitEvidence,
+)
+from fin_feature.storage.raw_store import PublishContext, RawStoreVerifyError
+
+SOURCE = "eastmoney"
+
+
+class TestB13UnitKeyAndPlanning:
+    """B13：unit_key 稳定与区分；计划阶段不产生重复单元。"""
+
+    def test_scope_parameters_never_share_a_unit(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        base = dict(unit_kind="financial", report_name="RPT_LICO_FN_CPD",
+                    secucode="000001.SZ")
+        scopes = [
+            {"page_size": 50},
+            {"page_size": 100},                      # 页大小改变
+            {"page_size": 50, "recent_periods": 8},  # 最近期数改变
+            {"page_size": 50, "filters": {"A": 1}},  # 筛选改变
+        ]
+        keys = [compute_unit_key(source_name=SOURCE, request_scope=s, **base) for s in scopes]
+        assert len(set(keys)) == 4
+
+        # 来源/报表/公司改变也分属不同单元
+        other = [
+            compute_unit_key(source_name="another", request_scope=scopes[0], **base),
+            compute_unit_key(source_name=SOURCE, request_scope=scopes[0],
+                             unit_kind="financial", report_name="RPT_DMSK_FN_BALANCE",
+                             secucode="000001.SZ"),
+            compute_unit_key(source_name=SOURCE, request_scope=scopes[0],
+                             unit_kind="financial", report_name="RPT_LICO_FN_CPD",
+                             secucode="600000.SH"),
+        ]
+        assert len(set(keys) | set(other)) == 7
+
+        unit_ids = {
+            env.repo.create_ingest_unit(
+                run_id=env.run_id, unit_key=key, source_name=SOURCE,
+                unit_kind="financial", report_name="RPT_LICO_FN_CPD",
+                secucode="000001.SZ",
+                request_scope=json.dumps(scopes[0]),
+            )
+            for key in keys
+        }
+        assert len(unit_ids) == 4
+        assert len(env.repo.get_units_for_run(env.run_id)) == 4
+
+    def test_same_semantics_plans_one_unit(self, evidence_env):
+        """同语义（键序不同的 scope）计划两次 → 同一 unit，不重复插入。"""
+        env = evidence_env
+        env.new_run()
+        scope_a = {"page_size": 50, "recent_periods": 4}
+        scope_b = {"recent_periods": 4, "page_size": 50}
+        key = compute_unit_key(source_name=SOURCE, unit_kind="financial",
+                               report_name="RPT_LICO_FN_CPD", secucode="000001.SZ",
+                               request_scope=scope_a)
+        assert key == compute_unit_key(source_name=SOURCE, unit_kind="financial",
+                                       report_name="RPT_LICO_FN_CPD",
+                                       secucode="000001.SZ", request_scope=scope_b)
+
+        first = env.repo.create_ingest_unit(
+            run_id=env.run_id, unit_key=key, source_name=SOURCE, unit_kind="financial",
+            report_name="RPT_LICO_FN_CPD", secucode="000001.SZ",
+            request_scope=json.dumps(scope_a),
+        )
+        second = env.repo.create_ingest_unit(
+            run_id=env.run_id, unit_key=key, source_name=SOURCE, unit_kind="financial",
+            report_name="RPT_LICO_FN_CPD", secucode="000001.SZ",
+            request_scope=json.dumps(scope_b),
+        )
+        assert first == second
+        assert env.conn.execute("SELECT COUNT(*) FROM ingest_unit").fetchone()[0] == 1
+        assert env.repo.count_units(env.run_id) == {"planned": 1}
+
+    def test_new_run_reuses_scope_but_is_a_new_unit(self, evidence_env):
+        """正常重跑新建 run：同范围在新 run 里是独立单元，不复用旧 run 结论。"""
+        env = evidence_env
+        first_run = env.new_run()
+        unit_a = env.new_unit(run_id=first_run)
+        second_run = env.repo.create_ingest_run(SOURCE)
+        unit_b = env.new_unit(run_id=second_run)
+
+        assert unit_a["unit_key"] == unit_b["unit_key"]
+        assert unit_a["unit_id"] != unit_b["unit_id"]
+        assert env.conn.execute("SELECT COUNT(*) FROM ingest_unit").fetchone()[0] == 2
+
+    def test_stock_list_unit_shape_enforced(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        env.new_unit(unit_kind="stock_list")
+        row = env.repo.get_units_for_run(env.run_id)[0]
+        assert row["unit_kind"] == "stock_list"
+        assert row["report_name"] == "stock_list"
+        assert row["secucode"] == ""
+
+        unit_key = compute_unit_key(
+            source_name=SOURCE, unit_kind="financial", report_name="RPT_LICO_FN_CPD",
+            secucode="000001.SZ", request_scope={"page_size": 50},
+        )
+        with pytest.raises(ValueError):
+            env.repo.create_ingest_unit(
+                run_id=env.run_id, unit_key=unit_key, source_name=SOURCE,
+                unit_kind="financial", report_name="stock_list", secucode="000001.SZ",
+                request_scope="{}",
+            )
+        with pytest.raises(ValueError):
+            env.repo.create_ingest_unit(
+                run_id=env.run_id, unit_key=unit_key, source_name=SOURCE,
+                unit_kind="financial", report_name="RPT_LICO_FN_CPD", secucode="",
+                request_scope="{}",
+            )
+
+    def test_unit_lifecycle_guards(self, evidence_env):
+        """planned → running → 终态；终态不可就地重跑。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        unit_id = unit["unit_id"]
+
+        env.repo.mark_unit_running(unit_id)
+        with pytest.raises(ValueError, match="不能重新开始"):
+            env.repo.mark_unit_running(unit_id)
+        env.repo.finish_unit(unit_id, "success_empty")
+        assert env.repo.get_unit(unit_id)["status"] == "success_empty"
+
+        with pytest.raises(ValueError, match="不能把成功单元改为 failed"):
+            env.repo.finish_unit(unit_id, "failed", failure_code="E")
+        # 已完成单元在新计划中直接复用，不重复占位
+        assert env.repo.create_ingest_unit(
+            run_id=unit["run_id"], unit_key=unit["unit_key"], source_name=SOURCE,
+            unit_kind="financial", report_name=unit["report_name"],
+            secucode=unit["secucode"], request_scope=unit["request_scope"],
+        ) == unit_id
+
+    def test_failed_unit_reentry_in_same_run_rejected(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        env.repo.finish_unit(unit["unit_id"], "failed", failure_code="http_error")
+
+        with pytest.raises(ValueError, match="重入被拒绝"):
+            env.repo.create_ingest_unit(
+                run_id=unit["run_id"], unit_key=unit["unit_key"], source_name=SOURCE,
+                unit_kind="financial", report_name=unit["report_name"],
+                secucode=unit["secucode"], request_scope=unit["request_scope"],
+            )
+
+    def test_max_pages_per_unit_guard(self):
+        class Cfg:
+            def __init__(self, value):
+                self._value = value
+
+            def get(self, *keys, default=None):
+                return self._value if keys[:2] == ("crawl", "max_pages_per_unit") else default
+
+        assert resolve_max_pages_per_unit(None) == 1000
+        assert resolve_max_pages_per_unit(Cfg(25)) == 25
+        for bad in (0, -1, True, "10", None):
+            with pytest.raises(ValueError):
+                resolve_max_pages_per_unit(Cfg(bad))
+
+
+class TestB14CrossEntityConsistency:
+    """B14：unit/run/source、attempt/unit、snapshot 各字段错配逐项拒绝。"""
+
+    def test_unknown_run_and_source_mismatch_rejected(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        key = compute_unit_key(source_name=SOURCE, unit_kind="financial",
+                               report_name="RPT_LICO_FN_CPD", secucode="000001.SZ",
+                               request_scope={"page_size": 50})
+        with pytest.raises(ValueError, match="不存在于 ingest_run"):
+            env.repo.create_ingest_unit(
+                run_id="run-does-not-exist", unit_key=key, source_name=SOURCE,
+                unit_kind="financial", report_name="RPT_LICO_FN_CPD",
+                secucode="000001.SZ", request_scope="{}",
+            )
+        with pytest.raises(ValueError, match="来源不一致"):
+            env.repo.create_ingest_unit(
+                run_id=env.run_id, unit_key=key, source_name="other_source",
+                unit_kind="financial", report_name="RPT_LICO_FN_CPD",
+                secucode="000001.SZ", request_scope="{}",
+            )
+        assert env.conn.execute("SELECT COUNT(*) FROM ingest_unit").fetchone()[0] == 0
+
+    def test_attempt_requires_existing_unit(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        with pytest.raises(ValueError, match="不存在于 ingest_unit"):
+            env.repo.register_attempt("no-such-unit", 1, 1)
+        for bad in (0, -1, True, "1"):
+            unit = env.new_unit(secucode=f"00000{bad if isinstance(bad, int) else 9}.SZ")
+            with pytest.raises(ValueError, match="page_number"):
+                env.repo.register_attempt(unit["unit_id"], bad, 1)
+
+    def test_snapshot_identity_mismatches_rejected(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        attempt = env.repo.register_attempt(unit["unit_id"], 1, 1)
+        body = b'{"a":1}'
+        stored = env.store.publish(
+            PublishContext(run_id=unit["run_id"], unit_key=unit["unit_key"],
+                           unit_id=unit["unit_id"], page_number=1, http_attempt=1,
+                           source_name=SOURCE, fetched_at="2026-10-16T08:00:00Z",
+                           http_status=200),
+            body,
+        )
+        base = dict(
+            run_id=unit["run_id"], source_name=SOURCE, report_name=unit["report_name"],
+            secucode=unit["secucode"], page_number=1, request_params="{}",
+            raw_content_hash=stored.raw_hash, file_path=stored.file_path,
+            record_count=1, attempt_id=attempt, http_status=200,
+            raw_bytes=stored.raw_bytes, fetched_at="2026-10-16T08:00:00Z",
+        )
+
+        cases = {
+            "报表不一致": {"report_name": "RPT_DMSK_FN_BALANCE"},
+            "公司不一致": {"secucode": "600000.SH"},
+            "页号不一致": {"page_number": 2},
+            "来源不一致": {"source_name": "other_source"},
+        }
+        for message, override in cases.items():
+            with pytest.raises(ValueError, match=message):
+                env.repo.save_raw_snapshot(**{**base, **override})
+        assert env.conn.execute("SELECT COUNT(*) FROM raw_snapshot").fetchone()[0] == 0
+
+        # 缺少 attempt_id 的 legacy 路径不能声明为 v4 证据
+        with pytest.raises(ValueError, match="必须给出 attempt_id"):
+            env.repo.save_raw_snapshot(
+                **{**base, "attempt_id": None, "raw_format": "http-body-v1"}
+            )
+        # 非 100..599 状态码拒绝
+        for bad_status in (0, 99, 600, True, "200"):
+            with pytest.raises(ValueError, match="http_status"):
+                env.repo.save_raw_snapshot(**{**base, "http_status": bad_status})
+        # 不存在的 attempt 拒绝
+        with pytest.raises(ValueError, match="不存在于 ingest_attempt"):
+            env.repo.save_raw_snapshot(**{**base, "attempt_id": "no-such-attempt"})
+
+    def test_snapshot_belongs_to_unit_run(self, evidence_env):
+        """attempt 的单元属于另一个 run 时，snapshot 不能借用本 run 身份。"""
+        env = evidence_env
+        run_a = env.new_run()
+        unit_a = env.new_unit(run_id=run_a)
+        run_b = env.repo.create_ingest_run(SOURCE)
+        unit_b = env.new_unit(run_id=run_b, secucode="600000.SH")
+        attempt_b = env.repo.register_attempt(unit_b["unit_id"], 1, 1)
+
+        stored = env.store.publish(
+            PublishContext(run_id=run_b, unit_key=unit_b["unit_key"],
+                           unit_id=unit_b["unit_id"], page_number=1, http_attempt=1,
+                           source_name=SOURCE, fetched_at="2026-10-16T08:00:00Z",
+                           http_status=200),
+            b'{"a":1}',
+        )
+        with pytest.raises(ValueError, match="采集批次不一致"):
+            env.repo.save_raw_snapshot(
+                run_a, SOURCE, unit_a["report_name"], unit_a["secucode"], 1,
+                "{}", stored.raw_hash, stored.file_path, 1, attempt_id=attempt_b,
+                http_status=200, raw_bytes=stored.raw_bytes,
+                fetched_at="2026-10-16T08:00:00Z",
+            )
+        assert env.conn.execute("SELECT COUNT(*) FROM raw_snapshot").fetchone()[0] == 0
+
+    def test_run_id_exported_from_snapshot(self, evidence_env):
+        """未显式给 run_id 时导出快照所属批次，不保存未知批次。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(unit, rows=[{"TOTAL_OPERATE_INCOME": 100}])
+
+        version_id = env.repo.create_statement_version(
+            secucode=unit["secucode"], report_date="2024-03-31",
+            table_type="financial_indicator", source_name=SOURCE,
+            snapshot_id=captured.snapshot_id,
+            standardized_fields=json.dumps({"total_operate_income": 100}),
+            raw_fields=json.dumps(captured.rows[0], sort_keys=True),
+            row_index=0, unit_evidence=env.evidence(unit["unit_id"], [captured]),
+        )
+        row = env.conn.execute(
+            "SELECT run_id FROM statement_version WHERE version_id = ?", (version_id,)
+        ).fetchone()
+        assert row["run_id"] == unit["run_id"]
+        obs = env.repo.get_observations_for_version(version_id)[0]
+        assert obs["run_id"] == unit["run_id"]
+
+    def test_version_run_mismatch_rejected(self, evidence_env):
+        env = evidence_env
+        run_a = env.new_run()
+        unit = env.new_unit(run_id=run_a)
+        captured = env.capture(unit, rows=[{"TOTAL_OPERATE_INCOME": 100}])
+        run_b = env.repo.create_ingest_run(SOURCE)
+
+        with pytest.raises(ValueError, match="采集批次不一致"):
+            env.repo.create_statement_version(
+                secucode=unit["secucode"], report_date="2024-03-31",
+                table_type="financial_indicator", source_name=SOURCE,
+                snapshot_id=captured.snapshot_id, run_id=run_b,
+                standardized_fields=json.dumps({"total_operate_income": 100}),
+                raw_fields=json.dumps(captured.rows[0], sort_keys=True),
+                row_index=0, unit_evidence=env.evidence(unit["unit_id"], [captured]),
+            )
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+
+    def test_unit_evidence_identity_checked(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        other = env.new_unit(secucode="600000.SH")
+        captured = env.capture(unit, rows=[{"TOTAL_OPERATE_INCOME": 100}])
+
+        with pytest.raises(ValueError, match="单元公司不一致"):
+            env.repo.create_statement_version(
+                secucode=unit["secucode"], report_date="2024-03-31",
+                table_type="financial_indicator", source_name=SOURCE,
+                snapshot_id=captured.snapshot_id,
+                standardized_fields=json.dumps({"total_operate_income": 100}),
+                raw_fields=json.dumps(captured.rows[0], sort_keys=True),
+                row_index=0, unit_evidence=env.evidence(other["unit_id"], [captured]),
+            )
+        with pytest.raises(ValueError, match="不存在"):
+            env.repo.create_statement_version(
+                secucode=unit["secucode"], report_date="2024-03-31",
+                table_type="financial_indicator", source_name=SOURCE,
+                snapshot_id=captured.snapshot_id,
+                standardized_fields=json.dumps({"total_operate_income": 100}),
+                raw_fields=json.dumps(captured.rows[0], sort_keys=True),
+                row_index=0, unit_evidence=UnitEvidence(unit_id="ghost", complete=True),
+            )
+        # 不完整证明不能声明证据充分
+        with pytest.raises(ValueError, match="不完整"):
+            env.repo.create_statement_version(
+                secucode=unit["secucode"], report_date="2024-03-31",
+                table_type="financial_indicator", source_name=SOURCE,
+                snapshot_id=captured.snapshot_id,
+                standardized_fields=json.dumps({"total_operate_income": 100}),
+                raw_fields=json.dumps(captured.rows[0], sort_keys=True),
+                row_index=0, unit_evidence=env.evidence(unit["unit_id"], [captured],
+                                                        complete=False),
+            )
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+
+
+class TestB15ReplayAndConflict:
+    """B15：同 attempt 重登记、同 row locator 重处理/矛盾输入。"""
+
+    def test_same_attempt_reregistration(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        first = env.repo.register_attempt(unit["unit_id"], 1, 1)
+        assert env.repo.register_attempt(unit["unit_id"], 1, 1) == first
+        assert env.conn.execute("SELECT COUNT(*) FROM ingest_attempt").fetchone()[0] == 1
+
+        env.repo.finish_attempt(first, "ok")
+        with pytest.raises(ValueError, match="拒绝重跑同一尝试"):
+            env.repo.register_attempt(unit["unit_id"], 1, 1)
+
+    def test_attempt_outcome_finalized_once(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        attempt = env.repo.register_attempt(unit["unit_id"], 1, 1)
+        env.repo.finish_attempt(attempt, "transport_error", error_code="timeout")
+        with pytest.raises(ValueError, match="不接受重复结算"):
+            env.repo.finish_attempt(attempt, "ok")
+        row = env.repo.get_attempt(attempt)
+        assert row["outcome"] == "transport_error"
+        assert row["error_code"] == "timeout"
+
+    def test_snapshot_replay_idempotent_conflict_otherwise(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(unit, rows=[{"TOTAL_OPERATE_INCOME": 100}])
+        kwargs = dict(
+            run_id=unit["run_id"], source_name=SOURCE, report_name=unit["report_name"],
+            secucode=unit["secucode"], page_number=1, request_params="{}",
+            http_status=200, attempt_id=captured.attempt_id,
+            validation_status="pending", fetched_at="2026-10-16T08:00:00Z",
+        )
+        same = env.repo.save_raw_snapshot(
+            raw_content_hash=captured.raw_hash, file_path=captured.file_path,
+            record_count=1, raw_bytes=captured.raw_bytes, **kwargs,
+        )
+        assert same == captured.snapshot_id
+        assert env.conn.execute("SELECT COUNT(*) FROM raw_snapshot").fetchone()[0] == 1
+
+        # 同 attempt 不同内容：文件校验先失败（不接受调用方自述摘要）
+        with pytest.raises(RawStoreVerifyError):
+            env.repo.save_raw_snapshot(
+                raw_content_hash="0" * 64, file_path=captured.file_path,
+                record_count=1, raw_bytes=captured.raw_bytes, **kwargs,
+            )
+        # 文件/哈希一致但核心字段不同：冲突，不更新原证据、不另插一行
+        with pytest.raises(CaptureConflict):
+            env.repo.save_raw_snapshot(
+                raw_content_hash=captured.raw_hash, file_path=captured.file_path,
+                record_count=1, raw_bytes=captured.raw_bytes,
+                **{**kwargs, "request_params": '{"page_size": 100}'},
+            )
+        row = env.repo.get_snapshot(captured.snapshot_id)
+        assert row["raw_content_hash"] == captured.raw_hash
+        assert row["file_path"] == captured.file_path
+        assert row["request_params"] == "{}"
+        assert env.conn.execute("SELECT COUNT(*) FROM raw_snapshot").fetchone()[0] == 1
+
+    def test_row_locator_replay_is_idempotent(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(
+            unit, rows=[{"TOTAL_OPERATE_INCOME": 100}, {"TOTAL_OPERATE_INCOME": 200}]
+        )
+        first = env.create_version(unit, captured, row_index=0,
+                                   standardized={"total_operate_income": 100})
+        replay = env.create_version(unit, captured, row_index=0,
+                                    standardized={"total_operate_income": 100})
+        assert replay == first
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 1
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_observation").fetchone()[0] == 1
+
+    def test_contradictory_row_input_conflicts_without_partial_change(self, evidence_env):
+        """同 (snapshot, row_index) 不同内容 → 冲突；当前投影与旧观察不被部分修改。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(
+            unit, rows=[{"TOTAL_OPERATE_INCOME": 100}, {"TOTAL_OPERATE_INCOME": 200}]
+        )
+        version_a = env.create_version(unit, captured, row_index=0,
+                                       standardized={"total_operate_income": 100})
+        version_b = env.create_version(unit, captured, row_index=1,
+                                       standardized={"total_operate_income": 200})
+        assert version_a != version_b
+
+        def pointer(version_id):
+            return env.conn.execute(
+                "SELECT is_superseded, superseded_by FROM statement_version "
+                "WHERE version_id = ?", (version_id,)
+            ).fetchone()
+
+        before_a, before_b = pointer(version_a), pointer(version_b)
+        obs_before = [dict(r) for r in env.repo.get_observations_for_version(version_a)]
+
+        with pytest.raises(CaptureConflict):
+            env.create_version(unit, captured, row_index=0,
+                               standardized={"total_operate_income": 999})
+
+        assert pointer(version_a)["is_superseded"] == before_a["is_superseded"]
+        assert pointer(version_a)["superseded_by"] == before_a["superseded_by"]
+        assert pointer(version_b)["is_superseded"] == before_b["is_superseded"]
+        assert pointer(version_b)["superseded_by"] == before_b["superseded_by"]
+        assert [dict(r) for r in env.repo.get_observations_for_version(version_a)] == obs_before
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 2
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_observation").fetchone()[0] == 2
+
+    def test_contradictory_metadata_conflicts(self, evidence_env):
+        """同一来源行、同内容但公告元信息不同 → 冲突（不静默改写既有观察）。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(unit, rows=[{"TOTAL_OPERATE_INCOME": 100}])
+        env.create_version(unit, captured, row_index=0, notice_date="2024-04-15")
+
+        with pytest.raises(CaptureConflict):
+            env.create_version(unit, captured, row_index=0, notice_date="2024-04-20")
+        obs = env.conn.execute(
+            "SELECT notice_date FROM statement_observation WHERE snapshot_id = ? AND row_index = 0",
+            (captured.snapshot_id,),
+        ).fetchone()
+        assert obs["notice_date"] == "2024-04-15"
+
+    def test_different_rows_same_content_share_version(self, evidence_env):
+        """两行原始值相同 → 复用同一内容版本，但各自保留来源行定位。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(
+            unit, rows=[{"TOTAL_OPERATE_INCOME": 100}, {"TOTAL_OPERATE_INCOME": 100}]
+        )
+        first = env.create_version(unit, captured, row_index=0,
+                                   standardized={"total_operate_income": 100})
+        second = env.create_version(unit, captured, row_index=1,
+                                    standardized={"total_operate_income": 100})
+        assert first == second
+        observations = env.repo.get_observations_for_version(first)
+        assert sorted(o["row_index"] for o in observations) == [0, 1]
+        assert {o["snapshot_id"] for o in observations} == {captured.snapshot_id}
+
+    def test_row_verifier_mismatch_rejected(self, evidence_env):
+        """row_index 无法重建传入值时拒绝声明证据充分。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(unit, rows=[{"TOTAL_OPERATE_INCOME": 100}])
+
+        def strict_verifier(snapshot_id, row_index, standardized, raw_fields):
+            rows = env.rows_by_snapshot[snapshot_id]
+            if raw_fields != rows[row_index]:
+                return False
+            return standardized == {
+                "total_operate_income": rows[row_index]["TOTAL_OPERATE_INCOME"]
+            }
+
+        with pytest.raises(ValueError, match="无法重建"):
+            env.create_version(
+                unit, captured, row_index=0,
+                standardized={"total_operate_income": 424242},
+                evidence=env.evidence(unit["unit_id"], [captured], verifier=strict_verifier),
+            )
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_observation").fetchone()[0] == 0
+
+    def test_set_snapshot_validation_one_way(self, evidence_env):
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(unit, rows=[], validation="invalid")
+        assert env.repo.get_snapshot(captured.snapshot_id)["validation_status"] == "invalid"
+        with pytest.raises(ValueError, match="仅 pending"):
+            env.repo.set_snapshot_validation(captured.snapshot_id, "valid", 0)
