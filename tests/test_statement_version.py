@@ -90,10 +90,10 @@ class TestStatementVersionCrud:
         assert row_v2["is_superseded"] == 0
 
     def test_same_content_idempotent(self, repo):
-        """同内容幂等：metric_hash + semantic_hash 相同仍创建新版本（观察不同），但语义哈希相同可识别为同内容（T2-06，验收标准 3）。"""
+        """同内容幂等：metric_hash + semantic_hash 相同不创建新版本（T2-06，验收标准 3）。"""
         r, conn, _ = repo
 
-        # 两次相同内容
+        # 第一次创建
         v1 = r.create_statement_version(
             secucode="000001.SZ",
             report_date="2024-03-31",
@@ -103,6 +103,7 @@ class TestStatementVersionCrud:
             semantic_hash="same_hash",
         )
 
+        # 第二次相同内容应返回相同 version_id（幂等）
         v2 = r.create_statement_version(
             secucode="000001.SZ",
             report_date="2024-03-31",
@@ -112,19 +113,15 @@ class TestStatementVersionCrud:
             semantic_hash="same_hash",
         )
 
-        # observation_seq 递增
-        row_v1 = conn.execute(
-            "SELECT observation_seq FROM statement_version WHERE version_id = ?", (v1,)
-        ).fetchone()
-        row_v2 = conn.execute(
-            "SELECT observation_seq FROM statement_version WHERE version_id = ?", (v2,)
-        ).fetchone()
+        # 幂等：v1 == v2
+        assert v1 == v2
 
-        assert row_v1["observation_seq"] == 1
-        assert row_v2["observation_seq"] == 2
-
-        # 但语义哈希相同，应用层可识别为同内容（不视为内容修订）
-        # 这里测试的是 observation_seq 正确递增，幂等性由应用层保证
+        # 只有一条版本记录
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM statement_version WHERE secucode = ? AND report_date = ? AND table_type = ?",
+            ("000001.SZ", "2024-03-31", "financial_indicator")
+        ).fetchone()
+        assert rows[0] == 1
 
     def test_get_latest_statement_version(self, repo):
         """get_latest_statement_version 返回最新非替代版本。"""

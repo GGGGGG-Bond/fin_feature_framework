@@ -391,8 +391,9 @@ CREATE TABLE IF NOT EXISTS feature_compute_log (
     code_commit            TEXT,                      -- 计算时 git commit
     config_snapshot        TEXT,                      -- JSON: 规范化的实际生效配置（含默认值与运行覆盖）
     as_of_date             TEXT,                      -- 计算时点
-    computed_at            TEXT DEFAULT (datetime('now', 'localtime')),
-    FOREIGN KEY (compute_run_id) REFERENCES ingest_run(run_id)
+    computed_at            TEXT DEFAULT (datetime('now', 'localtime'))
+    -- 注意：compute_run_id 不引用 ingest_run（计算批次≠采集批次，P1 #4 修复）
+    -- 计算可能消费多个采集批次或旧迁移版本，需独立标识
 );
 """
 

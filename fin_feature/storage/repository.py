@@ -374,15 +374,17 @@ class Repository:
         request_scope: str | None = None,
         crawler_version: str | None = None,
     ) -> str:
-        """创建采集批次，返回 run_id（UUID）。"""
+        """创建采集批次，返回 run_id（UUID）。
+
+        P1 #3 修复：不自行提交，事务由外层调用方控制（采集单元原子性）。
+        """
         import uuid
         run_id = str(uuid.uuid4())
         sql = """
             INSERT INTO ingest_run (run_id, source_name, request_scope, crawler_version, status)
             VALUES (?, ?, ?, ?, 'running')
         """
-        with self.conn:
-            self.conn.execute(sql, (run_id, source_name, request_scope, crawler_version))
+        self.conn.execute(sql, (run_id, source_name, request_scope, crawler_version))
         return run_id
 
     def finish_ingest_run(
@@ -392,14 +394,13 @@ class Repository:
         failed_units: int = 0,
         detail: str | None = None,
     ) -> None:
-        """更新采集批次状态。"""
+        """更新采集批次状态。P1 #3 修复：不自行提交。"""
         sql = """
             UPDATE ingest_run
             SET status = ?, failed_units = ?, detail = ?, ended_at = datetime('now', 'localtime')
             WHERE run_id = ?
         """
-        with self.conn:
-            self.conn.execute(sql, (status, failed_units, detail, run_id))
+        self.conn.execute(sql, (status, failed_units, detail, run_id))
 
     # ------------------------------------------------------------------
     # 阶段 2 新增：原始响应留存 (raw_snapshot)
@@ -416,7 +417,7 @@ class Repository:
         file_path: str,
         record_count: int,
     ) -> str:
-        """保存原始响应记录，返回 snapshot_id（UUID）。"""
+        """保存原始响应记录，返回 snapshot_id（UUID）。P1 #3 修复：不自行提交。"""
         import uuid
         snapshot_id = str(uuid.uuid4())
         sql = """
@@ -425,12 +426,11 @@ class Repository:
              request_params, raw_content_hash, file_path, record_count)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        with self.conn:
-            self.conn.execute(
-                sql,
-                (snapshot_id, run_id, source_name, report_name, secucode, page_number,
-                 request_params, raw_content_hash, file_path, record_count),
-            )
+        self.conn.execute(
+            sql,
+            (snapshot_id, run_id, source_name, report_name, secucode, page_number,
+             request_params, raw_content_hash, file_path, record_count),
+        )
         return snapshot_id
 
     # ------------------------------------------------------------------
@@ -447,8 +447,8 @@ class Repository:
         notice_date: str | None = None,
         revision_notice_date: str | None = None,
         revision_type: str = "unknown",
-        metric_hash: str = "",
-        semantic_hash: str = "",
+        metric_hash: str | None = None,
+        semantic_hash: str | None = None,
         consolidate_scope: str = "unknown",
         period_basis: str = "unknown",
         currency: str = "unknown",
@@ -456,13 +456,35 @@ class Repository:
         industry_type: str = "unknown",
         standardized_fields: str | None = None,
         raw_fields: str | None = None,
-        evidence_sufficient: int = 1,
+        evidence_sufficient: int | None = None,
     ) -> str:
         """创建标准化版本记录，处理 observation_seq 自增和旧版本替代。
 
+        P2 #6 修复：无原始证据时 evidence_sufficient 默认为 0；哈希必须由调用方提供有效值。
         返回 version_id（UUID）。
         """
+        # P2 #6：无 snapshot_id 时 evidence_sufficient 必须为 0
+        if evidence_sufficient is None:
+            evidence_sufficient = 0 if snapshot_id is None else 1
+
+        # P2 #6：哈希不能为空占位符，必须提供有效值
+        if metric_hash is None or metric_hash == "":
+            raise ValueError("metric_hash 必须提供有效值（空字符串或 None 不接受）")
+        if semantic_hash is None or semantic_hash == "":
+            raise ValueError("semantic_hash 必须提供有效值（空字符串或 None 不接受）")
+
         import uuid
+
+        # P5 #5：检查是否已存在相同 metric_hash + semantic_hash 的版本（同内容幂等）
+        existing = self.conn.execute("""
+            SELECT version_id FROM statement_version
+            WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
+              AND metric_hash = ? AND semantic_hash = ?
+        """, (secucode, report_date, table_type, source_name, metric_hash, semantic_hash)).fetchone()
+
+        if existing is not None:
+            # 同内容已存在，返回现有 version_id，不创建新版本（幂等）
+            return existing[0]
 
         # 获取下一 observation_seq
         cur = self.conn.execute("""
@@ -482,22 +504,21 @@ class Repository:
              industry_type, standardized_fields, raw_fields, evidence_sufficient)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        with self.conn:
-            self.conn.execute(
-                sql,
-                (version_id, snapshot_id, run_id, secucode, report_date, table_type, source_name,
-                 notice_date, revision_notice_date, revision_type, metric_hash, semantic_hash,
-                 next_seq, consolidate_scope, period_basis, currency, amount_unit,
-                 industry_type, standardized_fields, raw_fields, evidence_sufficient),
-            )
+        self.conn.execute(
+            sql,
+            (version_id, snapshot_id, run_id, secucode, report_date, table_type, source_name,
+             notice_date, revision_notice_date, revision_type, metric_hash, semantic_hash,
+             next_seq, consolidate_scope, period_basis, currency, amount_unit,
+             industry_type, standardized_fields, raw_fields, evidence_sufficient),
+        )
 
-            # 标记旧版本为替代（同分组内仅最新为 0）
-            self.conn.execute("""
-                UPDATE statement_version
-                SET is_superseded = 1, superseded_by = ?
-                WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
-                  AND version_id != ?
-            """, (version_id, secucode, report_date, table_type, source_name, version_id))
+        # 标记旧版本为替代（同分组内仅最新为 0）
+        self.conn.execute("""
+            UPDATE statement_version
+            SET is_superseded = 1, superseded_by = ?
+            WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
+              AND version_id != ?
+        """, (version_id, secucode, report_date, table_type, source_name, version_id))
 
         return version_id
 
@@ -560,7 +581,7 @@ class Repository:
         config_snapshot: str | None,
         as_of_date: str | None,
     ) -> str:
-        """写入不可变计算记录，返回 result_id（UUID）。"""
+        """写入不可变计算记录，返回 result_id（UUID）。P1 #3 修复：不自行提交。"""
         import uuid
         result_id = str(uuid.uuid4())
         sql = """
@@ -570,13 +591,12 @@ class Repository:
              code_commit, config_snapshot, as_of_date)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        with self.conn:
-            self.conn.execute(
-                sql,
-                (result_id, compute_run_id, secucode, report_date, feature_name,
-                 definition_version, input_version_ids, feature_value, not_computable_reason,
-                 code_commit, config_snapshot, as_of_date),
-            )
+        self.conn.execute(
+            sql,
+            (result_id, compute_run_id, secucode, report_date, feature_name,
+             definition_version, input_version_ids, feature_value, not_computable_reason,
+             code_commit, config_snapshot, as_of_date),
+        )
         return result_id
 
     def get_compute_log(self, result_id: str) -> sqlite3.Row | None:
