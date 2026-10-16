@@ -179,3 +179,7 @@ ALTER TABLE features ADD COLUMN not_computable_reason TEXT;
 | observed_at | 系统观察时间（本系统记录时间） |
 
 不得混用过滤水位。水位（crawl_watermark.last_notice_date）用于诊断和修订检测，不用于报告期过滤。
+
+## 2B 增量规范入口（待实现）
+
+本文记录已发布 2A/v3；2B 的 v4 增量表、列和约束见 [2B 数据与迁移契约](2b-schema.md)。不得通过修改旧迁移 DDL 提前创建这些对象，也不得将规范交付表述为 v4 已运行。
