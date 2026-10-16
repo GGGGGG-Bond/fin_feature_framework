@@ -31,11 +31,15 @@ def _content_digest(record: dict) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def _sort_key(record: dict) -> tuple:
-    """去重排序键：notice_date → entry_time → content_digest。
+def sort_key(record: dict) -> tuple:
+    """选值排序键：notice_date → entry_time → content_digest。
 
     T31: 有效公告日优先；已提供有效 entry_time 时使用该证据；
     仍相同时按确定内容摘要选取。不依赖输入顺序。
+
+    这是阶段一已验收的选值规则，阶段 2 迁移的当前投影复用同一函数，
+    避免两套排序漂移（B1）。使用前先按 `deduplicate` 的口径规范化
+    report_date 与 notice_date。
     """
     notice_date = record.get("notice_date") or ""
     entry_time = record.get("entry_time") or ""
@@ -84,7 +88,7 @@ def deduplicate(
             continue
 
         # T31: 按确定性排序键选取最新版本，不依赖输入顺序
-        records.sort(key=_sort_key)
+        records.sort(key=sort_key)
         chosen = records[-1]
         prev = records[-2]
 

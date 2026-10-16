@@ -53,7 +53,8 @@ def cmd_crawl(args) -> None:
     stock_count = config.crawl.get("stock_count", 50)
     logger.info("开始爬取 %d 只股票列表...", stock_count)
     stocks = stock_crawler.fetch_stock_list(stock_count)
-    repo.upsert_stock_list(stocks)
+    with repo.unit_of_work():
+        repo.upsert_stock_list(stocks)
     logger.info("股票列表爬取完成：%d 只", len(stocks))
 
     # 2. 爬取三张报表
@@ -91,7 +92,8 @@ def cmd_crawl(args) -> None:
                 if recent_periods is not None:
                     records = select_recent_periods(records, recent_periods)
                 mapped = [map_fields(r, report_name) for r in records]
-                written = repo.batch_upsert_raw(table_suffix, mapped)
+                with repo.unit_of_work():
+                    written = repo.batch_upsert_raw(table_suffix, mapped)
                 total += written
                 logger.info("[%d/%d] %s %s: %d 条", i, len(secucodes), secucode, table_suffix, written)
             except Exception as exc:
