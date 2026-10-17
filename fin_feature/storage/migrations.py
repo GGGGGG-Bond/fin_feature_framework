@@ -68,12 +68,18 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     _ensure_schema_version_table(conn)
     current = _get_current_version(conn)
 
+    if current >= 4:
+        verify_v4_structure(conn)
+
     for version, name, fn in MIGRATIONS:
         if version > current:
             _apply_migration(conn, version, name, fn)
 
     if _get_current_version(conn) >= 4:
         verify_v4_structure(conn)
+    if _get_current_version(conn) >= 5:
+        from fin_feature.storage.clean_model import verify_v5_structure
+        verify_v5_structure(conn)
 
 
 def migrate_v1_baseline(conn: sqlite3.Connection) -> None:
@@ -863,10 +869,13 @@ def verify_migration(conn: sqlite3.Connection) -> dict:
     }
 
 
+from fin_feature.storage.clean_model import migrate_v5_clean_lineage
+
 # 迁移注册表（按顺序）
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (1, "v1_baseline", migrate_v1_baseline),
     (2, "v2_stage2", migrate_v2_stage2),
     (3, "v3_rereview_fixes", migrate_v3_rereview_fixes),
     (4, "v4_ingestion_evidence", migrate_v4_ingestion_evidence),
+    (5, "v5_clean_lineage", migrate_v5_clean_lineage),
 ]
