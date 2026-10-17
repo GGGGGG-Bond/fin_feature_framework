@@ -348,6 +348,19 @@ def main() -> None:
     ss.add_argument("--output-dir", required=True, help="必须不存在的新目录，保留原体及报告")
     from fin_feature.source_sample import cmd_source_sample
 
+    rr = sub.add_parser("reference-check", help="对照人工核实的年报检查固定样本（离线）")
+    rr.add_argument("--left", required=True)
+    rr.add_argument("--right", required=True)
+    rr.add_argument("--reference", required=True, help="reviewed-reference-v1 JSON")
+    rr.add_argument("--document", required=True, help="已保存且哈希匹配的官方年报 PDF")
+    from fin_feature.reference_check import cmd_reference_check
+
+    rb = sub.add_parser("review-batch", help="重核样本证据并汇总官方年报抽查覆盖")
+    rb.add_argument("--batch-dir", required=True)
+    rb.add_argument("--reviews", required=True, help="reference-review-plan-v1 JSON")
+    rb.add_argument("--output-dir", required=True, help="必须不存在的新目录")
+    from fin_feature.review_batch import cmd_review_batch
+
     args = parser.parse_args()
 
     commands = {
@@ -355,6 +368,7 @@ def main() -> None:
         "clean": cmd_clean,
         "features": cmd_features,
         "sample-batch": cmd_sample_batch,
+        "review-batch": cmd_review_batch,
         "quality": cmd_quality,
         "incremental": cmd_incremental,
         "backtest": cmd_backtest,
@@ -362,6 +376,7 @@ def main() -> None:
         "replay": cmd_replay,
         "reconcile": cmd_reconcile,
         "source-sample": cmd_source_sample,
+        "reference-check": cmd_reference_check,
     }
     result = commands[args.command](args)
     # 传播退出码（None 视为成功）
