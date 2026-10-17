@@ -361,9 +361,20 @@ def main() -> None:
     rb.add_argument("--output-dir", required=True, help="必须不存在的新目录")
     from fin_feature.review_batch import cmd_review_batch
 
+    ao = sub.add_parser("as-of", help="只读查询实际保存的截至日版本与可选特征")
+    ao.add_argument("--as-of", required=True, help="ISO 日期；system 也接受带时区时间戳")
+    ao.add_argument("--view", choices=("system", "public"), default="system")
+    ao.add_argument("--secucode", default=None)
+    ao.add_argument("--features", action="store_true", help="在内存计算；不覆盖当前结果")
+    from fin_feature.asof import cmd_asof
+    sub.add_parser("refresh", help="原子清洗当前版本并重算受修订影响公司的全部报告期")
+    from fin_feature.refresh import cmd_refresh
+
     args = parser.parse_args()
 
     commands = {
+        "as-of": cmd_asof,
+        "refresh": cmd_refresh,
         "crawl": cmd_crawl,
         "clean": cmd_clean,
         "features": cmd_features,

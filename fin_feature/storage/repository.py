@@ -1331,6 +1331,8 @@ class Repository:
                 normalization_diagnostics=normalization_diagnostics,
                 observed_at=observed_at,
             )
+            if existing[1] == 1 and not defer_projection:
+                self.invalidate_current_outputs(secucode, report_date, table_type)
             return existing_id
 
         # 获取下一 observation_seq
@@ -1386,6 +1388,8 @@ class Repository:
                   AND version_id != ?
             """, (version_id, secucode, report_date, table_type, source_name, version_id))
 
+        if not defer_projection:
+            self.invalidate_current_outputs(secucode, report_date, table_type)
         return version_id
 
     def _verify_snapshot_consistency(
@@ -1846,6 +1850,27 @@ class Repository:
             ORDER BY observed_at ASC
         """, (version_id,)).fetchall()
 
+    def invalidate_current_outputs(self, secucode, report_date, table_type):
+        """A changed current version invalidates current projections, never history.
+
+        Conservatively invalidate all current stage1 features of this company:
+        later YoY/QoQ periods can depend on the changed comparison period.
+        refresh rebuilds them atomically. Other definitions remain protected.
+        """
+        if table_type not in ('financial_indicator', 'income_statement', 'balance_sheet'):
+            raise ValueError('unsupported statement table')
+        # Accepted stage2-only draft databases can legitimately lack downstream
+        # projection tables. Invalidate existing outputs; do not manufacture schema.
+        tables = {r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if f'clean_{table_type}' in tables:
+            self.conn.execute(f'DELETE FROM clean_{table_type} WHERE secucode=? AND report_date=?',
+                              (secucode, report_date))
+        if 'clean_selection' in tables:
+            self.conn.execute('DELETE FROM clean_selection WHERE secucode=? AND report_date=? AND table_type=?',
+                              (secucode, report_date, table_type))
+        if 'features' in tables:
+            self.conn.execute("DELETE FROM features WHERE secucode=? AND definition_version='stage1-v1'", (secucode,))
+
     def get_latest_statement_version(
         self, secucode: str, report_date: str, table_type: str, source_name: str = "eastmoney"
     ) -> sqlite3.Row | None:
@@ -1920,7 +1945,10 @@ class Repository:
             (version_id, secucode, report_date, table_type, source_name,
              version_id, version_id),
         )
-        return changed or cur.rowcount > 0
+        changed = changed or cur.rowcount > 0
+        if changed:
+            self.invalidate_current_outputs(secucode, report_date, table_type)
+        return changed
 
     def get_latest_versions_for_report(
         self, secucode: str, report_date: str

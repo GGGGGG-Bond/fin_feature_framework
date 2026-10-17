@@ -53,6 +53,11 @@ def current_versions(repo):
     rows = [dict(row) for row in repo.conn.execute(
         "SELECT * FROM statement_version WHERE source_name='eastmoney' AND is_superseded=0 "
         'ORDER BY secucode, report_date, table_type')]
+    return validate_versions(repo, rows)
+
+
+def validate_versions(repo, rows):
+    """Validate immutable identities/content for current and historical selection."""
     seen = set()
     for row in rows:
         date = row['report_date']

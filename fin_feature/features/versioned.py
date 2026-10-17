@@ -134,7 +134,7 @@ def evaluate_feature(adapter, company, date, feature_name):
             'inputs': inputs, 'diagnostics': diagnostics}
 
 
-def compute_versioned(repo, groups=None, config=None):
+def compute_versioned(repo, groups=None, config=None, companies=None):
     from fin_feature.features.engine import DEFINITION_VERSION, _build_context
     from fin_feature.features.base import FeatureContext
     classes = FeatureRegistry.get_all()
@@ -151,7 +151,8 @@ def compute_versioned(repo, groups=None, config=None):
     # Same transaction covers version selection, calculations, logs and current projection.
     with repo.unit_of_work():
         adapter = VersionedCleanRepository(repo, config)
-        pairs = sorted({(company, date) for company, date, _ in adapter.results})
+        pairs = sorted({(company, date) for company, date, _ in adapter.results
+                        if companies is None or company in companies})
         for company, date in pairs:
             for cls in classes:
                 feature = cls()
