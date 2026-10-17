@@ -190,9 +190,9 @@ class FinancialIngestionCoordinator:
     # ------------------------------------------------------------------
     # 运行生命周期
     # ------------------------------------------------------------------
-    def run(self, specs: list[FinancialUnitSpec]) -> RunResult:
+    def run(self, specs: list[FinancialUnitSpec], *, run_id: str | None = None) -> RunResult:
         """执行一批财务单元；返回以已持久化状态为准的运行汇总。"""
-        if self.repository.conn.in_transaction:
+        if self.repository.conn.in_transaction or self.repository.transaction_broken:
             raise ActiveTransactionError(
                 "协调器不能在已有外层事务中调用：请在请求前提交或回滚外层事务，"
                 "避免把网络与审计提交嵌入调用方事务"
@@ -202,17 +202,29 @@ class FinancialIngestionCoordinator:
         run_started = self._clock()
         plan: dict[str, tuple[str, FinancialUnitSpec]] = {}
         with self.repository.unit_of_work():
-            run_id = self.repository.create_ingest_run(
-                self.source_name,
-                request_scope=canonical_json({
-                    "report_names": sorted({spec.report_name for spec in validated}),
-                    "secucodes": sorted({spec.secucode for spec in validated}),
-                    "recent_periods": self.recent_periods,
-                    "mapping_version": self.mapping_version,
-                }),
-                crawler_version=self.crawler_version,
-                started_at=run_started,
-            )
+            if run_id is None:
+                run_id = self.repository.create_ingest_run(
+                    self.source_name,
+                    request_scope=canonical_json({
+                        "report_names": sorted({spec.report_name for spec in validated}),
+                        "secucodes": sorted({spec.secucode for spec in validated}),
+                        "recent_periods": self.recent_periods,
+                        "mapping_version": self.mapping_version,
+                        "max_pages_per_unit": self.max_pages_per_unit,
+                        "max_body_bytes": self.raw_store.max_body_bytes,
+                    }),
+                    crawler_version=self.crawler_version,
+                    started_at=run_started,
+                )
+            else:
+                existing = self.repository.conn.execute(
+                    "SELECT source_name, status FROM ingest_run WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                units = self.repository.get_units_for_run(run_id)
+                if (existing is None or existing["source_name"] != self.source_name
+                    or existing["status"] != "running" or len(units) != 1
+                    or units[0]["unit_kind"] != "stock_list" or units[0]["status"] != "success"):
+                    raise ValueError("existing run must have exactly one successful discovery unit")
             for spec in validated:
                 scope = canonical_json(self._request_scope(spec))
                 unit_key = compute_unit_key(
@@ -261,7 +273,7 @@ class FinancialIngestionCoordinator:
 
         try:
             with self.repository.unit_of_work():
-                summary = self.repository.finalize_run(run_id)
+                summary = self.repository.finalize_run(run_id, unit_kinds=("financial",))
         except Exception as exc:  # noqa: BLE001 - 运行边界：不能据此宣称成功
             # 例如提交失败后外部读锁仍阻塞终态写入：返回 failed，run 保持
             # running 供对账，不能把未写入的终态报告为成功。

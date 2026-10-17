@@ -252,3 +252,31 @@ B26/R2 仍有未覆盖路径：同公告日次批 EITIME=null 或不提供时，
 用户授权本 agent 修复 R2；[交付](../reviews/stage2b-2-entry-evidence-fix.md)、[闭环脚本](../reviews/stage2b-2-entry-evidence-acceptance.py)、[结果](../reviews/stage2b-2-entry-evidence-results.json)。全量 478 passed、11 deselected；代码提交上 9 组闭环通过，R1/R2/R3 均按修复后预期断言。
 
 B26/R2 新增 `test_ingestion_coordinator.py::test_r2_missing_entry_keeps_full_historical_selection_evidence` 的 null、absent、empty 三个参数：具体断言三条消费路径一致、历史 entry 保留、明确新修订可升级、未知观察不伪造 entry、原始 body 不变、重复内容版本复用、UTC 与重连持久化。修复前 null/absent 明确失败，修复后全通过。旧 be4908d 复现脚本只记录历史缺陷，应在该固定头运行；修复后使用本节闭环脚本。R2 由同一 agent 实施自验证，未冒充另一 agent 独立复审；B34-B46/2B-3 不在本批。
+
+## 2B-3 实现映射（2026-10-17，自验证，待 MR 审阅）
+
+代码 `16e2fe4`，基准 main `cbbc074`（MR!7）。新增 `tests/test_ingestion_cli.py` 74 项（含参数化），基准 478 项完整保留。全量命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider -m 'not requires_network'
+# 552 passed，11 deselected（11.42s）
+```
+
+仅真实临时 SQLite/gzip 与脚本化 HTTP，不联网、不迁移真实库。本表为用例映射，不将 13 组 ID 当作 13 项测试；旧批次映射与证据保留。
+
+| ID | tests/test_ingestion_cli.py 中的 test_ 后缀/覆盖 |
+|---|---|
+| B34 | b34_both_commands_use_the_same_financial_service；b34_configured_report_whitelist_drives_both_entries：共同计划、版本、水位、一个 run、配置报表白名单 |
+| B35 / B43 | b35_b43_empty_and_nonempty_success_preserve_watermarks：两入口非空/全空/混合、较晚旧水位与未知公告、请求不含水位过滤；B36 补充先成功后失败 |
+| B36 | b36_failure_counts_financial_units_not_retries：部分/全失败，发现成功不掩盖财务全失败，两次 HTTP 尝试仍只计一个失败单元 |
+| B37 | b37_local_empty_universe_has_no_fake_failure_units；b37_discovery_empty_is_a_single_prerequisite_failure |
+| B38 | b38_invalid_scope_is_rejected_before_database_or_requests；b38_invalid_filesystem_or_configuration_shape；b38_empty_yaml_list_is_not_silently_defaulted：退出 2，DB 初始化与 GET 均不发生 |
+| B39 | b39_discovery_failure_retains_bodies_without_updating_list；b39_discovery_limit_keeps_partial_evidence_without_list_update；b39_stock_list_write_failure_rolls_back_before_financial_plan |
+| B40 | b40_last_page_is_complete_and_declared_exhaustion_succeeds；b40_multiple_pages_can_finish_at_n_without_exhausting_source：超过 N 的原页完整、源耗尽不足 N、达到 N 后停止发现 |
+| B41 / B31 | b41_terminal_write_failure_preserves_committed_units；b41_keyboard_interrupt_retains_unfinished_attempt；b31_cli_actual_commit_failure_has_nonzero_exit_and_zero_business_rows：真实 commit 方法抛错，不由测试预先 rollback |
+| B42 | b42_cli_audit_of_new_capture_is_read_only；b42_stock_success_claim_must_satisfy_n_or_source_exhaustion；既有 test_raw_audit.py 继续覆盖孤儿/temp/legacy/running/篡改 |
+| B44 / B18 | b44_body_never_enters_logs_and_params_remain_whitelisted；b44_generated_evidence_paths_are_git_ignored；b18_cli_storage_failure_is_not_retried |
+| B45 | b45_cli_does_not_run_cleaning_or_switch_consumers：先断言未自动清洗/特征，再真实运行阶段一消费路径，兼容 raw ROE 16.75 / 版本标准值 0.1675；全部旧回归保留 |
+| B46 | b46_cli_versions_have_real_file_and_row_evidence；既有 test_ingestion_unit.py / test_raw_store.py 保留假文件、legacy、错身份拒绝充分性断言 |
+
+旧 evidence_helpers 的股票受控 fixture 更新为真实发现范围（stock_count/page_size/endpoint），原有充分性与拒绝断言未放宽。帮助、默认配置预检和 git diff --check 另行通过。此处结果由实施者自验证，不表述为独立审阅结论。

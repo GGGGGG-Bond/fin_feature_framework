@@ -1,4 +1,4 @@
-"""CLI 入口：爬取/清洗/特征/质量/增量/回测 六个子命令。
+"""CLI 入口：爬取/清洗/特征/质量/增量/回测 及原始证据对账七个子命令。
 
 用法：
     python -m fin_feature.cli crawl
@@ -15,7 +15,6 @@ from datetime import datetime
 
 from fin_feature.config import load_config
 from fin_feature.storage.database import Database
-from fin_feature.storage.field_mapping import map_fields
 from fin_feature.storage.repository import Repository
 from fin_feature.utils.logger import setup_logger
 
@@ -27,87 +26,78 @@ def _get_db_and_repo(config):
     return db, Repository(db.conn)
 
 
-def cmd_crawl(args) -> None:
-    """爬取数据：股票列表 + 三张报表。"""
-    config = load_config(args.config)
-    logger = setup_logger(level=config.logging.get("level", "INFO"),
-                          log_file=config.logging.get("file"))
+def _new_ingestion_session(settings):
+    """One anonymous session; credentials and arbitrary headers never enter snapshots."""
+    import requests
+    session = requests.Session()
+    session.headers.update({"User-Agent": settings.user_agent, "Referer": settings.referer})
+    return session
 
-    from fin_feature.constants import (
-        REPORT_BALANCE_SHEET,
-        REPORT_FINANCIAL_INDICATOR,
-        REPORT_INCOME_STATEMENT,
-    )
-    from fin_feature.crawler.eastmoney import EastMoneyCrawler
-    from fin_feature.crawler.stock_list import StockListCrawler
 
-    db, repo = _get_db_and_repo(config)
+def _cmd_ingest(args, mode):
+    import json
+    from pathlib import Path
+    import yaml
+    from fin_feature.ingestion.settings import validate_ingestion_settings
+    from fin_feature.ingestion.http_evidence import EvidenceRequestExecutor
+    from fin_feature.ingestion.workflow import IngestionWorkflow
+    from fin_feature.storage.raw_store import RawStore
+    from fin_feature.crawler.rate_limiter import RateLimiter
 
-    # 1. 爬取股票列表
-    stock_crawler = StockListCrawler(
-        stock_list_url=config.crawler.get("stock_list_url"),
-        timeout=config.crawler.get("timeout", 15),
-        min_interval=config.crawler.get("min_interval", 1.5),
-        user_agent=config.crawler.get("user_agent"),
-    )
-    stock_count = config.crawl.get("stock_count", 50)
-    logger.info("开始爬取 %d 只股票列表...", stock_count)
-    stocks = stock_crawler.fetch_stock_list(stock_count)
-    with repo.unit_of_work():
-        repo.upsert_stock_list(stocks)
-    logger.info("股票列表爬取完成：%d 只", len(stocks))
+    # Validate the complete request/config scope before DB initialization, run creation or GET.
+    try:
+        if args.config is not None and not Path(args.config).is_file():
+            raise ValueError("configuration file does not exist")
+        config = load_config(args.config)
+        settings = validate_ingestion_settings(config)
+    except (ValueError, TypeError, OSError, yaml.YAMLError) as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
 
-    # 2. 爬取三张报表
-    em_crawler = EastMoneyCrawler(
-        base_url=config.crawler.get("base_url"),
-        page_size=config.crawler.get("page_size", 50),
-        timeout=config.crawler.get("timeout", 15),
-        min_interval=config.crawler.get("min_interval", 1.5),
-        max_retries=config.crawler.get("max_retries", 3),
-        user_agent=config.crawler.get("user_agent"),
-        referer=config.crawler.get("referer", ""),
-    )
-
-    report_map = {
-        REPORT_FINANCIAL_INDICATOR: "financial_indicator",
-        REPORT_INCOME_STATEMENT: "income_statement",
-        REPORT_BALANCE_SHEET: "balance_sheet",
-    }
-
-    secucodes = [s["secucode"] for s in stocks]
-    # 读取 recent_periods 配置
-    recent_periods = config.crawl.get("recent_periods")
-    from fin_feature.addons.incremental import select_recent_periods, validate_recent_periods
-    # 请求前校验 N
-    recent_periods = validate_recent_periods(recent_periods)
-
-    failed_units: list[str] = []
-    for report_name, table_suffix in report_map.items():
-        logger.info("开始爬取 %s (%d 家公司，recent_periods=%s)...", report_name, len(secucodes), recent_periods)
-        total = 0
-        for i, secucode in enumerate(secucodes, 1):
+    db, session = None, None
+    logger = setup_logger()
+    code = 1
+    try:
+        logger = setup_logger(level=config.logging.get("level", "INFO"), log_file=config.logging.get("file"))
+        db, repo = _get_db_and_repo(config)
+        store = RawStore(settings.raw_root, settings.max_body_bytes)
+        repo.raw_store = store
+        session = _new_ingestion_session(settings)
+        limiter = RateLimiter(settings.min_interval)
+        def executor(url):
+            return EvidenceRequestExecutor(repository=repo, raw_store=store, session=session,
+                                           url=url, timeout=settings.timeout,
+                                           max_retries=settings.max_retries, rate_limiter=limiter)
+        workflow = IngestionWorkflow(repo, store, executor(settings.financial_url), settings,
+                                     stock_executor=executor(settings.stock_url) if mode == "crawl" else None)
+        result = workflow.run(mode)
+        print(json.dumps({"run_id": result.run_id, "status": result.status,
+                          "failed_units": result.failed_units, "total": result.total,
+                          "success": result.success, "failed": result.failed,
+                          "incomplete": result.incomplete}, sort_keys=True))
+        code = result.exit_code
+    except KeyboardInterrupt:
+        logger.error("Ingestion interrupted; unfinished evidence is retained for audit-raw")
+    except Exception as exc:
+        # Keep the console bounded: raw response bodies never belong in diagnostic output.
+        logger.error("Ingestion failed: %s", type(exc).__name__)
+    finally:
+        if session is not None:
             try:
-                records = em_crawler.fetch_by_company(secucode, report_name)
-                # N 期选择：保留目标期内全部记录（含修订）
-                if recent_periods is not None:
-                    records = select_recent_periods(records, recent_periods)
-                mapped = [map_fields(r, report_name) for r in records]
-                with repo.unit_of_work():
-                    written = repo.batch_upsert_raw(table_suffix, mapped)
-                total += written
-                logger.info("[%d/%d] %s %s: %d 条", i, len(secucodes), secucode, table_suffix, written)
-            except Exception as exc:
-                logger.error("爬取 %s %s 失败（单元失败，不提交）：%s", secucode, report_name, exc)
-                failed_units.append(f"{secucode}/{report_name}")
-        logger.info("%s 爬取完成：共 %d 条", report_name, total)
+                session.close()
+            except Exception:
+                code = 1
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                code = 1
+    return code
 
-    db.close()
 
-    # 汇总失败单元，非零退出
-    if failed_units:
-        logger.error("爬取完成，但 %d 个单元失败: %s", len(failed_units), failed_units)
-        return 1
-    return 0
+def cmd_crawl(args) -> int:
+    """Discover stocks with raw evidence, then run the shared financial coordinator."""
+    return _cmd_ingest(args, "crawl")
 
 
 def cmd_clean(args) -> None:
@@ -166,48 +156,9 @@ def cmd_quality(args) -> None:
     db.close()
 
 
-def cmd_incremental(args) -> None:
-    """增量爬取。"""
-    config = load_config(args.config)
-    logger = setup_logger(level=config.logging.get("level", "INFO"),
-                          log_file=config.logging.get("file"))
-    from fin_feature.addons.incremental import crawl_incremental
-    from fin_feature.crawler.eastmoney import EastMoneyCrawler
-
-    db, repo = _get_db_and_repo(config)
-    em_crawler = EastMoneyCrawler(
-        base_url=config.crawler.get("base_url"),
-        page_size=config.crawler.get("page_size", 50),
-        timeout=config.crawler.get("timeout", 15),
-        min_interval=config.crawler.get("min_interval", 1.5),
-        max_retries=config.crawler.get("max_retries", 3),
-        user_agent=config.crawler.get("user_agent"),
-        referer=config.crawler.get("referer", ""),
-    )
-    # 获取已爬取的公司列表
-    secucodes = [r[0] for r in repo.conn.execute("SELECT secucode FROM stock_list").fetchall()]
-    if not secucodes:
-        logger.error("无股票列表，请先执行 crawl")
-        db.close()
-        return 1
-    # 读取 recent_periods 配置
-    recent_periods = config.crawl.get("recent_periods")
-    logger.info("增量爬取 %d 家公司，recent_periods=%s...", len(secucodes), recent_periods)
-    try:
-        stats = crawl_incremental(em_crawler, repo, secucodes, recent_periods=recent_periods)
-    except ValueError as exc:
-        logger.error("配置错误: %s", exc)
-        db.close()
-        return 1
-    failed_units = stats.pop("__failed_units__", 0)
-    for report_name, count in stats.items():
-        logger.info("%s: 新增 %d 条", report_name, count)
-    db.close()
-    # stage1-v1: 发生任一采集失败时非零退出
-    if failed_units:
-        logger.error("增量爬取完成，但 %d 个单元失败", failed_units)
-        return 1
-    return 0
+def cmd_incremental(args) -> int:
+    """Run the same financial coordinator using the persisted stock universe."""
+    return _cmd_ingest(args, "incremental")
 
 
 def cmd_audit_raw(args) -> int:
@@ -219,7 +170,7 @@ def cmd_audit_raw(args) -> int:
     logger = setup_logger(level=config.logging.get("level", "INFO"),
                           log_file=config.logging.get("file"))
 
-    if not args.run_id and not args.all_runs:
+    if bool(args.run_id) == bool(args.all_runs):
         logger.error("audit-raw 必须指定 --run-id 或 --all")
         return 2
 
@@ -257,11 +208,23 @@ def cmd_audit_raw(args) -> int:
     text = report.format_text()
     print(text)
 
+    import json
     report_dir = Path(args.report_dir or "data/audit")
-    report_dir.mkdir(parents=True, exist_ok=True)
-    report_path = report_dir / f"audit-raw_{report.scope}_{datetime.now():%Y%m%d%H%M%S}.txt"
-    report_path.write_text(text + "\n", encoding="utf-8")
-    logger.info("对账报告已保存至 %s", report_path)
+    try:
+        if report_dir.resolve() == raw_store.root or raw_store.root in report_dir.resolve().parents:
+            logger.error("audit reports must be outside the evidence root")
+            return 2
+        report_dir.mkdir(parents=True, exist_ok=True)
+        stem = f"audit-raw_{report.scope}_{datetime.now():%Y%m%d%H%M%S%f}"
+        report_path = report_dir / (stem + ".txt")
+        report_path.write_text(text + "\n", encoding="utf-8")
+        (report_dir / (stem + ".json")).write_text(
+            json.dumps(report.as_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        logger.info("audit report saved to %s", report_path)
+    except OSError:
+        logger.error("audit report output could not be written")
+        return 1
     return report.exit_code()
 
 
@@ -299,11 +262,13 @@ def main() -> None:
     parser.add_argument("--config", default=None, help="配置文件路径")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("crawl", help="爬取财务数据")
-    sub.add_parser("clean", help="清洗数据")
-    sub.add_parser("features", help="计算特征")
+    sub.add_parser("crawl", help="发现前 N 家公司并留证采集财务报表",
+                   description="先完整核验股票发现范围，再采集配置报表；0 成功，1 失败，2 非法配置。")
+    sub.add_parser("clean", help="清洗兼容 raw 表（stage1-v1）")
+    sub.add_parser("features", help="从 clean 表计算特征")
     sub.add_parser("quality", help="生成数据质量报告")
-    sub.add_parser("incremental", help="增量爬取")
+    sub.add_parser("incremental", help="对本地股票列表按报告期回扫并留证采集",
+                   description="使用全部本地 stock_list；recent_periods 限制报告期，水位不作请求过滤。0 成功，1 失败，2 非法配置。")
     bt = sub.add_parser("backtest", help="特征回测（分组分析）")
     bt.add_argument("--feature", required=True, help="用于分组的特征名")
     bt.add_argument("--date", required=True, help="分组日（报告期，如 2024-12-31）")
@@ -313,7 +278,7 @@ def main() -> None:
     ar.add_argument("--all", dest="all_runs", action="store_true",
                     help="检查全部批次（与 --run-id 二选一）")
     ar.add_argument("--report-dir", default=None,
-                    help="对账报告输出目录（默认 data/audit）")
+                    help="TXT/JSON 报告输出目录，须在证据根外（默认 data/audit）")
 
     args = parser.parse_args()
 

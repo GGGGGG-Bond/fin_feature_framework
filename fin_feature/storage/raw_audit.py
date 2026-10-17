@@ -312,6 +312,47 @@ def _check_unit_evidence(conn, raw_store, unit, add) -> None:
     # （股票发现 unit_kind=stock_list 不套用财务全分页规则）
     if unit["unit_kind"] == "financial" and envelopes:
         _check_page_completeness(conn, unit, envelopes, final_by_page, total_rows, add)
+    elif unit["unit_kind"] == "stock_list" and envelopes:
+        _check_stock_completeness(unit, envelopes, final_by_page, total_rows, add)
+
+
+def _check_stock_completeness(unit, envelopes, final_by_page, total_rows, add):
+    import json
+    from fin_feature.ingestion.stock_discovery import map_stock_row
+    from fin_feature.ingestion.capture import SchemaFailure
+
+    def problem(code, detail):
+        add(code, SEVERITY_ERROR, detail, run_id=unit["run_id"], unit_id=unit["unit_id"])
+    try:
+        scope = json.loads(unit["request_scope"])
+        requested = scope.get("stock_count")
+        if isinstance(requested, bool) or not isinstance(requested, int) or requested < 1:
+            raise ValueError("stock_count must be positive")
+    except (ValueError, TypeError, AttributeError):
+        problem("envelope_parse_failed", "stock discovery is missing a valid requested range")
+        return
+    numbers = sorted(final_by_page)
+    if numbers != list(range(1, len(numbers) + 1)):
+        problem("missing_declared_page", "stock discovery page numbers are not contiguous from one")
+    totals = {envelope.count for _, envelope in envelopes}
+    if len(totals) != 1:
+        problem("inconsistent_declared_count", "stock discovery total changed between pages")
+        return
+    total = totals.pop()
+    companies = set()
+    try:
+        for _, envelope in envelopes:
+            for row in envelope.rows:
+                companies.add(map_stock_row(row)["secucode"])
+    except SchemaFailure:
+        problem("envelope_parse_failed", "stock discovery includes an invalid company identity")
+        return
+    if not companies or total_rows > total:
+        problem("row_count_mismatch", "successful stock discovery is empty or exceeds its declared total")
+    if len(companies) < requested and total_rows < total:
+        problem("missing_declared_page", "stock discovery neither satisfied N nor exhausted the declared source")
+    if unit["source_rows"] != total_rows or unit["selected_rows"] != min(requested, len(companies)):
+        problem("row_count_mismatch", "stock discovery unit counts disagree with the original pages")
 
 
 def _check_page_completeness(conn, unit, envelopes, final_by_page, total_rows, add) -> None:

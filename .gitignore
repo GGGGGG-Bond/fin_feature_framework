@@ -33,3 +33,9 @@ dist/
 *.egg-info/
 .idea/
 .vscode/
+
+# RawStore atomic temporary files and configured evidence page directories
+*.body.gz.*.tmp
+**/eastmoney/*/*/*/p*/
+audit-raw_*.txt
+audit-raw_*.json
