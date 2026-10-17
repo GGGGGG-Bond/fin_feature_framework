@@ -141,3 +141,20 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:$PWD/tests" .venv/bin/python -I docs/
 | C4 | P2 | `test_raw_audit.py::TestC4FailedResponseEvidence`（http_error 无 snapshot 报告、transport_error 无 snapshot 干净） |
 
 反例脚本结果：R1-R8 原反例全部关闭（返回 result）；C1-C4 均按预期抛错（缺陷被阻断）。脚本末尾 `assert not any('probe_error'...)` 失败是预期——脚本把"无 probe_error"当作"缺陷仍存在"，C1-C4 现在正确抛错说明缺陷已修复。
+
+## 2B-1 边界复审整改映射（实现 agent 记录，2026-10-17；待复审）
+
+固定送审头 `c3522d2`，整改在 `feat/stage2b-1` 继续提交。审阅材料：分支 `docs/review-stage2b1-c3522d2`（commit `7b92c23`）。命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider -m 'not requires_network'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:$PWD/tests" .venv/bin/python -I docs/reviews/stage2b-1-c3522d2-repro.py
+```
+
+| 编号 | 级别 | 整改用例位置 |
+|---|---|---|
+| D1 | P2 | `test_ingestion_migration.py::TestD1IndexPredicateValidation`（WHERE 0 拒绝、反向 IS NULL 拒绝、正确谓词接受、遗漏非空条件拒绝） |
+| D2 | P1 | `test_ingestion_unit.py::TestD2FinalAttemptFromDatabase`（旧成功→较新失败拒绝、旧成功→较新成功只接受最新） |
+| D3 | P2 | `test_raw_audit.py::TestD3EnvelopeCompleteness`（无 count 缺页报告、无 count 完整页干净、HTML 报告、非法 JSON 报告） |
+
+反例脚本结果：R1-R8/C1-C4 原反例全部关闭（返回 result）；D1-D3/D3b 均按预期抛错（缺陷被阻断）。脚本末尾 `assert not any('probe_error'...)` 失败是预期——D1-D3 现在正确抛错说明缺陷已修复。

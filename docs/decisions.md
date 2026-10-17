@@ -168,3 +168,13 @@
 4. **C4 区分"最终页成功完整"与"每次收到响应留证据"**：`_check_attempts` 对非最终 http_error/business_error/decode_error/schema_error/storage_error 缺快照报 `failed_response_without_evidence`；transport_error 可无 snapshot。理由：R8 改动对所有非最终尝试直接 continue，把收到 HTTP 4xx/5xx 但未留原体的证据丢失也静默豁免；契约允许历史失败重试页 invalid，但收到响应必须留证据。
 
 **验证办法**：全量离线 385 项通过（R1-R8 回归 26 + C1-C4 回归 16）；反例脚本 R1-R8 全部关闭，C1-C4 均按预期抛错（缺陷被阻断）。
+
+### 2B-1 边界复审整改记录（实现 agent，2026-10-17；状态：待复审）
+
+边界复审对送审头 `c3522d2` 确认 R1-R8/C1-C4 全部关闭、C4 关闭，但边界检查发现 1 项 P1 + 2 项 P2（D1-D3），整改选择如下（审阅材料：分支 `docs/review-stage2b1-c3522d2`，commit `7b92c23`）：
+
+1. **D1 索引部分谓词精确比较**：`V4_REQUIRED_INDEX_SPECS` 增 `predicate` 集合（规范化为 "列名 IS NOT NULL"）；新增 `_normalize_index_predicate` 从 SQL 文本提取并规范化谓词；`collect_v4_structure_gaps` 比较具体谓词。理由：partial 布尔只查有无 WHERE，`WHERE 0`/反向 IS NULL/遗漏非空条件都通过，身份约束实际失效。
+2. **D2 最终页身份由数据库事实决定**：新增 `_final_attempts_by_page` 从持久化 attempt 集合确定每页最终尝试（同页最大 http_attempt）；`_verify_unit_evidence` 核对证明引用恰为该最终尝试的唯一 snapshot。理由：只检查所传 attempt 为 ok，没检查它真是该页最终尝试——旧成功快照在后续失败/running 尝试存在时仍能冒充充分证据。
+3. **D3 财务页信封强类型解析**：`_parse_page_envelope` 改返回 `{pages, count, error}` 强类型结果，不用 None 表示"跳过"；pages 必需、count 可选、解析失败报 `envelope_parse_failed`；`_check_page_completeness` count 缺失只跳过总行数检查，不影响页数完整性。理由：count 不是 int 或 JSON 解析失败就返回 None，envelopes 为空便跳过所有页数检查——无 count 缺页不报、HTML 信封解析失败也 clean。
+
+**验证办法**：全量离线 395 项通过（R1-R8 回归 26 + C1-C4 回归 16 + D1-D3 回归 10）；反例脚本 R1-R8/C1-C4 全部关闭，D1-D3/D3b 均按预期抛错（缺陷被阻断）。
