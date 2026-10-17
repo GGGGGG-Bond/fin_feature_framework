@@ -104,6 +104,7 @@ class EvidenceEnv:
             "unit_kind": unit_kind,
             "request_scope": scope_json,
             "run_id": run_id or self.run_id,
+            "source_name": self.source_name,
         }
 
     # -- HTTP 尝试与证据 ----------------------------------------------
