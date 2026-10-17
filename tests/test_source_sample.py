@@ -106,3 +106,11 @@ def test_no_parent_equity_substitution():
     items.append(dict(item_field='PARESHARRIGH',item_title='归属于母公司股东权益合计',item_value='99'))
     rows=map_sina(json.dumps(doc),'600519.SH',['2024-12-31'],'BS','evidence')
     assert next(r for r in rows if r['field']=='total_equity')['value'] is None
+
+
+def test_confirmed_broker_parent_profit_title_alias():
+    doc=sina('IS')
+    for item in doc['result']['data']['report_list']['20241231']['data']:
+        if item['item_field']=='PARENETP':item['item_title']='归属于母公司的净利润'
+    rows=map_sina(json.dumps(doc),'600030.SH',['2024-12-31'],'IS','evidence')
+    assert next(r for r in rows if r['field']=='parent_netprofit')['value']=='100.00'

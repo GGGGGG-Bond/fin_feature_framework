@@ -148,3 +148,5 @@ fin_feature_framework/
 ```
 
 完成采集留证 → 清洗 → 特征 → 重放 → 对账，输出 summary.json / replay.json。示例结果为 3 个财务单元、24 条特征、24 条重放一致、对账退出 0。重放入口与限制见 [2D 流程说明](docs/stage-2/2d-flow.md)。
+
+阶段 3 批量采样：8 家×2 年、固定分母、失败保留和旧证据复用，见 [使用说明](docs/stage-3/batch-sampling.md)。本批真实数字覆盖 74/96，尚非财务口径验收。

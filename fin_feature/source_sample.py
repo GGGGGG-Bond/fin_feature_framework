@@ -23,6 +23,9 @@ SINA_FIELDS = {
 }
 
 
+SINA_TITLE_ALIASES = {'PARENETP': {'归属于母公司的净利润'}}
+
+
 def validate_scope(secucode, periods):
     if not isinstance(secucode, str) or not re.fullmatch(r'\d{6}\.(SH|SZ)', secucode):
         raise ValueError('sample requires one canonical SH/SZ company')
@@ -71,7 +74,7 @@ def map_sina(body, secucode, periods, table, evidence):
             if FIELDS[field][0] != table:
                 continue
             item = items.get(code)
-            if item is not None and item.get('item_title') != title:
+            if item is not None and item.get('item_title') not in ({title} | SINA_TITLE_ALIASES.get(code, set())):
                 raise ValueError('Sina core field title changed: ' + code)
             row = mapped_row(secucode, period, field, item.get('item_value') if item else None, evidence, metadata)
             row['source_field'] = code

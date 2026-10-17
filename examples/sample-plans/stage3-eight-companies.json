@@ -1,0 +1,49 @@
+{
+  "schema": "sample-batch-v1",
+  "periods": [
+    "2024-12-31",
+    "2023-12-31"
+  ],
+  "companies": [
+    {
+      "secucode": "600519.SH",
+      "name": "贵州茅台",
+      "group": "消费"
+    },
+    {
+      "secucode": "000333.SZ",
+      "name": "美的集团",
+      "group": "制造"
+    },
+    {
+      "secucode": "300750.SZ",
+      "name": "宁德时代",
+      "group": "新能源制造"
+    },
+    {
+      "secucode": "600031.SH",
+      "name": "三一重工",
+      "group": "装备制造"
+    },
+    {
+      "secucode": "000002.SZ",
+      "name": "万科A",
+      "group": "地产/亏损候选"
+    },
+    {
+      "secucode": "600036.SH",
+      "name": "招商银行",
+      "group": "银行"
+    },
+    {
+      "secucode": "601318.SH",
+      "name": "中国平安",
+      "group": "保险"
+    },
+    {
+      "secucode": "600030.SH",
+      "name": "中信证券",
+      "group": "证券"
+    }
+  ]
+}

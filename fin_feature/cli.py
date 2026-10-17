@@ -318,6 +318,11 @@ def main() -> None:
     bt.add_argument("--feature", required=True, help="用于分组的特征名")
     bt.add_argument("--date", required=True, help="分组日（报告期，如 2024-12-31）")
 
+    sb = sub.add_parser("sample-batch", help="固定最多八家公司双源采样与覆盖汇总")
+    sb.add_argument("--plan", required=True, help="sample-batch-v1 JSON 计划")
+    sb.add_argument("--output-dir", required=True, help="必须不存在的新输出目录")
+    from fin_feature.sample_batch import cmd_sample_batch
+
     ar = sub.add_parser("audit-raw", help="只读对账采集证据（不改数据库与证据文件）")
     ar.add_argument("--run-id", default=None, help="只检查指定采集批次")
     ar.add_argument("--all", dest="all_runs", action="store_true",
@@ -349,6 +354,7 @@ def main() -> None:
         "crawl": cmd_crawl,
         "clean": cmd_clean,
         "features": cmd_features,
+        "sample-batch": cmd_sample_batch,
         "quality": cmd_quality,
         "incremental": cmd_incremental,
         "backtest": cmd_backtest,
