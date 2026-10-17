@@ -1511,6 +1511,20 @@ class Repository:
                 raise ValueError(
                     f"单元页证据 {page_snapshot_id} 不属于单元 {unit['unit_id']}"
                 )
+            # C2：终态失败的响应不能凭 valid 标志冒充业务输入。最终尝试必须 outcome=ok
+            # 且 HTTP 状态成功（2xx）；http_error/business_error 等终态失败即使文件有效、
+            # 快照标 valid，也不得声明证据充分。矛盾数据在此拒绝，不只指望协调器不生成。
+            if attempt["outcome"] != "ok":
+                raise ValueError(
+                    f"单元页证据 {page_snapshot_id} 的最终尝试 outcome={attempt['outcome']}，"
+                    f"非 ok：终态失败响应不能作为充分证据"
+                )
+            http_status = page["http_status"]
+            if http_status is None or not (200 <= int(http_status) < 300):
+                raise ValueError(
+                    f"单元页证据 {page_snapshot_id} 的 HTTP 状态 {http_status} 非成功（2xx），"
+                    f"不能作为充分证据"
+                )
             # R7：不能只信历史 valid 标志——逐页重新核对当前文件存在且哈希/大小一致
             self._verify_evidence_file(
                 page["file_path"], page["raw_content_hash"], page["raw_bytes"]

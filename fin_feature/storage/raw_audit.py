@@ -117,7 +117,7 @@ def audit_raw(
         report.counts[code] = report.counts.get(code, 0) + 1
 
     _check_runs(conn, run_id, add)
-    _check_units(conn, run_id, add)
+    _check_units(conn, raw_store, run_id, add)
     _check_attempts(conn, run_id, add)
     referenced = _check_snapshots(conn, raw_store, run_id, add)
     # R3：孤儿判断用全库引用集合（避免把其他批次的合法文件误报为孤儿），
@@ -151,7 +151,7 @@ def _check_runs(conn, run_id, add) -> None:
             )
 
 
-def _check_units(conn, run_id, add) -> None:
+def _check_units(conn, raw_store, run_id, add) -> None:
     where, params = _run_filter(run_id)
     rows = conn.execute(f"SELECT * FROM ingest_unit{where}", params).fetchall()
     for row in rows:
@@ -162,15 +162,22 @@ def _check_units(conn, run_id, add) -> None:
                 run_id=row["run_id"], unit_id=row["unit_id"],
             )
         if row["status"] in ("success", "success_empty"):
-            _check_unit_evidence(conn, row, add)
+            _check_unit_evidence(conn, raw_store, row, add)
 
 
-def _check_unit_evidence(conn, unit, add) -> None:
+def _check_unit_evidence(conn, raw_store, unit, add) -> None:
     """成功单元必须有可核验的分页证据；空成功也必须留有效空响应快照。
 
     R8：不能只看"至少一页 valid"——成功单元的全部最终页都必须已核验。
     pending/invalid 的最终页、缺页或 attempt/snapshot 状态矛盾都要报告。
     历史失败重试页（非最终页）可保留，不要求其也 valid。
+
+    C2：终态失败的响应不能凭 valid 标志冒充业务输入。最终尝试必须 outcome=ok
+    且 HTTP 状态成功（2xx）；http_error 等终态失败即使文件有效、快照标 valid，
+    对账也必须报告。
+
+    C3：成功财务单元需依据已核验原页信封核对声明范围、连续页号、稳定 pages/count
+    及合计行数；缺页不得 clean。股票发现的前 N 范围按其契约单独处理。
     """
     attempts = conn.execute(
         "SELECT * FROM ingest_attempt WHERE unit_id = ? ORDER BY page_number, http_attempt",
@@ -191,6 +198,9 @@ def _check_unit_evidence(conn, unit, add) -> None:
         if page not in final_by_page or attempt["http_attempt"] > final_by_page[page]["http_attempt"]:
             final_by_page[page] = attempt
 
+    # C3：收集每页信封（pages/count），核对声明范围、连续页号与合计行数
+    envelopes: list[dict] = []
+    total_rows = 0
     for page_number, attempt in sorted(final_by_page.items()):
         snapshot = conn.execute(
             "SELECT * FROM raw_snapshot WHERE attempt_id = ?", (attempt["attempt_id"],)
@@ -219,13 +229,115 @@ def _check_unit_evidence(conn, unit, add) -> None:
                 run_id=unit["run_id"], unit_id=unit["unit_id"],
                 snapshot_id=snapshot["snapshot_id"],
             )
+            continue
+        # C2：终态失败的响应不能凭 valid 标志冒充业务输入
+        if attempt["outcome"] != "ok":
+            add(
+                "terminal_failure_as_evidence", SEVERITY_ERROR,
+                f"成功单元的最终页 {page_number} 最终尝试 outcome={attempt['outcome']}，"
+                f"非 ok：终态失败响应不能作为成功单元证据",
+                run_id=unit["run_id"], unit_id=unit["unit_id"],
+                attempt_id=attempt["attempt_id"], snapshot_id=snapshot["snapshot_id"],
+            )
+            continue
+        http_status = snapshot["http_status"]
+        if http_status is None or not (200 <= int(http_status) < 300):
+            add(
+                "terminal_failure_as_evidence", SEVERITY_ERROR,
+                f"成功单元的最终页 {page_number} HTTP 状态 {http_status} 非成功（2xx），"
+                f"不能作为成功单元证据",
+                run_id=unit["run_id"], unit_id=unit["unit_id"],
+                snapshot_id=snapshot["snapshot_id"],
+            )
+            continue
+        # C3：解析原页信封，核对声明范围与连续页号
+        envelope = _parse_page_envelope(raw_store, snapshot)
+        if envelope is not None:
+            envelopes.append(envelope)
+        # 实际行数取快照 record_count（各页本页行数之和应等于声明总记录数）
+        if snapshot["record_count"] is not None:
+            total_rows += int(snapshot["record_count"])
+
+    # C3：财务单元核对声明页数与连续页号（股票发现 unit_kind=stock_list 不套用全分页规则）
+    if unit["unit_kind"] == "financial" and envelopes:
+        _check_page_completeness(conn, unit, envelopes, final_by_page, total_rows, add)
+
+
+def _parse_page_envelope(raw_store: RawStore, snapshot) -> dict | None:
+    """从原体响应解析分页信封（pages/count）。解析失败返回 None（不阻断对账）。"""
+    import json
+    try:
+        body = raw_store.verify({
+            "file_path": snapshot["file_path"],
+            "raw_hash": snapshot["raw_content_hash"],
+            "raw_bytes": snapshot["raw_bytes"],
+        }).body
+        payload = json.loads(body)
+    except (RawStoreVerifyError, RawStoreError, ValueError, json.JSONDecodeError):
+        return None
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(result, dict):
+        return None
+    pages = result.get("pages")
+    count = result.get("count")
+    if not isinstance(pages, int) or not isinstance(count, int):
+        return None
+    return {"pages": pages, "count": count}
+
+
+def _check_page_completeness(conn, unit, envelopes, final_by_page, total_rows, add) -> None:
+    """C3：核对声明页数、连续页号与合计行数。缺页不得 clean。
+
+    信封 count 是声明的总记录数（各页应一致），实际行数是各页 record_count 之和。
+    """
+    # 各页声明的总页数应一致
+    declared_pages_set = {e["pages"] for e in envelopes}
+    if len(declared_pages_set) != 1:
+        add(
+            "inconsistent_declared_pages", SEVERITY_ERROR,
+            f"成功单元各页声明的总页数不一致：{sorted(declared_pages_set)}",
+            run_id=unit["run_id"], unit_id=unit["unit_id"],
+        )
+        return
+    declared_pages = declared_pages_set.pop()
+    actual_pages = sorted(final_by_page.keys())
+    # 页号必须从 1 连续到声明总页数
+    expected_pages = list(range(1, declared_pages + 1))
+    missing = sorted(set(expected_pages) - set(actual_pages))
+    if missing:
+        add(
+            "missing_declared_page", SEVERITY_ERROR,
+            f"成功单元声明 {declared_pages} 页，但缺少页 {missing}",
+            run_id=unit["run_id"], unit_id=unit["unit_id"],
+        )
+    # 各页声明的总记录数应一致，且等于实际各页 record_count 之和
+    declared_count_set = {e["count"] for e in envelopes}
+    if len(declared_count_set) != 1:
+        add(
+            "inconsistent_declared_count", SEVERITY_ERROR,
+            f"成功单元各页声明的总记录数不一致：{sorted(declared_count_set)}",
+            run_id=unit["run_id"], unit_id=unit["unit_id"],
+        )
+        return
+    declared_count = declared_count_set.pop()
+    if declared_count != total_rows:
+        add(
+            "row_count_mismatch", SEVERITY_ERROR,
+            f"成功单元声明总记录数 count={declared_count}，但实际行数 {total_rows}",
+            run_id=unit["run_id"], unit_id=unit["unit_id"],
+        )
 
 
 def _check_attempts(conn, run_id, add) -> None:
     """逐条检查 HTTP 尝试；未结算的 attempt 在任何单元状态下都算未完成。
 
-    attempt_without_snapshot 只对每页的最终尝试报告：历史失败重试页（被后续成功
-    尝试取代）是保留对象，不要求其也有 snapshot。transport_error 允许无 snapshot。
+    C4：将"最终页是否成功完整"和"每次收到的响应是否留证据"分开检查。
+    - transport_error（网络无响应）：允许没有 snapshot，不伪造证据。
+    - http_error/business_error/decode_error/schema_error（收到失败响应）：
+      即使是非最终的历史重试页，也必须保留原体快照；缺快照报证据缺口。
+      契约允许历史失败重试页 invalid，不要求它 valid，但收到响应就必须留证据。
+    - 最终尝试（同页最大 http_attempt）：任何已结算 outcome（除 transport_error）
+      都必须有 snapshot。
     """
     where, params = _run_filter(run_id)
     rows = conn.execute(
@@ -242,6 +354,10 @@ def _check_attempts(conn, run_id, add) -> None:
                 row["http_attempt"] > final_attempt_by_page[key]["http_attempt"]:
             final_attempt_by_page[key] = row
 
+    # 收到失败响应但未留原体的终态（transport_error 除外——它本就无响应）
+    RECEIVED_FAILURE_OUTCOMES = ("http_error", "business_error", "decode_error",
+                                 "schema_error", "storage_error")
+
     for row in rows:
         if row["outcome"] == "running":
             add(
@@ -252,22 +368,28 @@ def _check_attempts(conn, run_id, add) -> None:
             )
             continue
         if row["outcome"] == "transport_error":
-            # 网络无响应：只有 attempt，允许没有 snapshot（第 3 类保留对象）
-            continue
-        # 非最终尝试（被后续重试取代）不要求 snapshot
-        key = (row["unit_id"], row["page_number"])
-        is_final = final_attempt_by_page[key]["attempt_id"] == row["attempt_id"]
-        if not is_final:
+            # 网络无响应：只有 attempt，允许没有 snapshot（不伪造证据）
             continue
         snapshot = conn.execute(
             "SELECT snapshot_id FROM raw_snapshot WHERE attempt_id = ?", (row["attempt_id"],)
         ).fetchone()
         if snapshot is None:
-            add(
-                "attempt_without_snapshot", SEVERITY_ERROR,
-                f"已结算 attempt（outcome={row['outcome']}）没有对应快照",
-                run_id=row["u_run"], unit_id=row["unit_id"], attempt_id=row["attempt_id"],
-            )
+            key = (row["unit_id"], row["page_number"])
+            is_final = final_attempt_by_page[key]["attempt_id"] == row["attempt_id"]
+            if is_final:
+                # 最终尝试缺快照：任何已结算 outcome（除 transport_error）都必须有证据
+                add(
+                    "attempt_without_snapshot", SEVERITY_ERROR,
+                    f"最终 attempt（outcome={row['outcome']}）没有对应快照",
+                    run_id=row["u_run"], unit_id=row["unit_id"], attempt_id=row["attempt_id"],
+                )
+            elif row["outcome"] in RECEIVED_FAILURE_OUTCOMES:
+                # C4：历史失败重试页收到响应但未留原体——证据丢失，不得因后续成功消除
+                add(
+                    "failed_response_without_evidence", SEVERITY_ERROR,
+                    f"历史失败 attempt（outcome={row['outcome']}）收到响应但未保留原体快照",
+                    run_id=row["u_run"], unit_id=row["unit_id"], attempt_id=row["attempt_id"],
+                )
 
 
 def _check_snapshots(conn, raw_store: RawStore, run_id, add) -> set[str]:

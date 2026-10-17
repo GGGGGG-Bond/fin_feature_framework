@@ -228,6 +228,33 @@ def _index_exists(conn: sqlite3.Connection, index: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _index_definition(conn: sqlite3.Connection, index: str) -> dict | None:
+    """读取索引定义：unique、表、列、是否部分索引（有 WHERE）。
+
+    C1：同名普通索引冒充唯一索引、错列或错误部分条件都必须能被识别。
+    返回 None 表示索引不存在。
+    """
+    row = conn.execute(
+        "SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=?",
+        (index,),
+    ).fetchone()
+    if row is None:
+        return None
+    table, sql = row[0], row[1] or ""
+    # sqlite_master.sql 对自动索引（如 UNIQUE 约束）为 NULL；显式 CREATE INDEX 才有文本
+    is_partial = " WHERE " in sql.upper()
+    # unique 由 PRAGMA index_list 给出（origin='c' 为约束自动索引，也唯一）
+    unique = False
+    columns: tuple[str, ...] = ()
+    for info in conn.execute(f"PRAGMA index_list({table})").fetchall():
+        if info[1] == index:
+            unique = bool(info[2])
+            break
+    for col in conn.execute(f"PRAGMA index_info({index})").fetchall():
+        columns += (col[2],)
+    return {"unique": unique, "table": table, "columns": columns, "partial": is_partial}
+
+
 def _add_features_columns(conn: sqlite3.Connection) -> None:
     """features 表加 6 列（幂等）。"""
     columns_to_add = [
@@ -256,16 +283,28 @@ V4_REQUIRED_INDEXES = (
     "uq_observation_source_row",
 )
 
-# R6：新表的运行依赖列（缺列会在业务落盘时报 SQL 错误，应在初始化阶段拒绝）
+# R6/C1：新表的运行依赖列（缺列会在业务落盘时报 SQL 错误，应在初始化阶段拒绝）。
+# 必须覆盖全部实际写入字段，不能只列主键与状态字段——started_at/ended_at/
+# failure_code/detail 都是 mark_unit_running/finish_unit 的写入目标。
 V4_INGEST_UNIT_REQUIRED_COLUMNS = (
     "unit_id", "run_id", "unit_key", "source_name", "unit_kind", "report_name",
-    "secucode", "request_scope", "status", "source_rows", "selected_rows",
-    "new_versions", "new_observations", "compat_writes",
+    "secucode", "request_scope", "status", "started_at", "ended_at",
+    "failure_code", "source_rows", "selected_rows", "new_versions",
+    "new_observations", "compat_writes", "detail",
 )
 V4_INGEST_ATTEMPT_REQUIRED_COLUMNS = (
     "attempt_id", "unit_id", "page_number", "http_attempt", "started_at",
     "ended_at", "outcome", "error_code", "detail",
 )
+
+# C1：关键索引的期望定义（unique、列集、部分条件），用于结构复查。
+# 同名但非唯一、错列或错误部分条件的索引必须被识别为缺口。
+V4_REQUIRED_INDEX_SPECS = {
+    "uq_raw_snapshot_attempt": {"unique": True, "table": "raw_snapshot",
+                                "columns": ("attempt_id",), "partial": True},
+    "uq_observation_source_row": {"unique": True, "table": "statement_observation",
+                                  "columns": ("snapshot_id", "row_index"), "partial": True},
+}
 
 
 def migrate_v4_ingestion_evidence(conn: sqlite3.Connection) -> None:
@@ -309,6 +348,10 @@ def collect_v4_structure_gaps(conn: sqlite3.Connection) -> list[str]:
 
     R6 修复：不只检查新表名字，还检查 ingest_unit / ingest_attempt 的必需列，
     以及关键索引定义，避免"版本号对、表名对但缺列"的库被静默接受。
+
+    C1 修复：必需列覆盖全部运行写入字段（started_at/ended_at/failure_code/detail）；
+    关键唯一索引不只查名字，还查 unique 标志、列集与部分条件——同名非唯一索引、
+    错列或错误部分条件的索引都报为缺口。
     """
     from fin_feature.storage.schema import (
         V4_RAW_SNAPSHOT_COLUMNS,
@@ -325,16 +368,33 @@ def collect_v4_structure_gaps(conn: sqlite3.Connection) -> list[str]:
     for column, _spec in V4_STATEMENT_OBSERVATION_COLUMNS:
         if not _column_exists(conn, "statement_observation", column):
             gaps.append(f"缺少列 statement_observation.{column}")
-    # R6：新表的必需列（运行依赖，缺列会在业务落盘时报 SQL 错误）
+    # R6/C1：新表的必需列（运行依赖，缺列会在业务落盘时报 SQL 错误）
     for column in V4_INGEST_UNIT_REQUIRED_COLUMNS:
         if not _column_exists(conn, "ingest_unit", column):
             gaps.append(f"缺少列 ingest_unit.{column}")
     for column in V4_INGEST_ATTEMPT_REQUIRED_COLUMNS:
         if not _column_exists(conn, "ingest_attempt", column):
             gaps.append(f"缺少列 ingest_attempt.{column}")
+    # C1：关键索引不只查存在，还查定义（unique/列/部分条件）
     for index in V4_REQUIRED_INDEXES:
         if not _index_exists(conn, index):
             gaps.append(f"缺少索引 {index}")
+            continue
+        spec = V4_REQUIRED_INDEX_SPECS.get(index)
+        if spec is None:
+            continue
+        actual = _index_definition(conn, index)
+        if actual is None:
+            gaps.append(f"缺少索引 {index}")
+            continue
+        if spec["unique"] and not actual["unique"]:
+            gaps.append(f"索引 {index} 应为 UNIQUE 但实际非唯一")
+        if actual["columns"] != spec["columns"]:
+            gaps.append(
+                f"索引 {index} 列集不符：期望 {spec['columns']}，实际 {actual['columns']}"
+            )
+        if spec["partial"] and not actual["partial"]:
+            gaps.append(f"索引 {index} 应为部分索引（含 WHERE）但实际无部分条件")
     return gaps
 
 
