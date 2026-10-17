@@ -37,3 +37,7 @@ JSON 报告输出 stdout：0=两方全部字段与参考一致；1=至少一方�
 ## 状态与下一步
 
 完成第一家公司两年度六字段的官方报表数值核查。尚未完成计划的 8 家×2 年覆盖、修订案例与历史可见性验收。下一步按同样小流程扩公司/行业，并保留无法确认的字段；不扩展通用审批、PDF 自动解析或历史修订平台。
+
+## 本轮补充：部分字段与年报原单位
+
+reference 的 coverage 默认为 exact，仍要求双方输入与参考身份全集一致；显式 selected-fields 可仅检查指定字段，报告同时列 input_pairs 与 unchecked_pairs，不把未查项目视为通过。参考项可提供 document_value/document_unit（yuan、wan_yuan、million_yuan），代码检验它与标准元 value 的精确换算。金融样本只抽查已确认的四类字段，年度列和物理 PDF 页码需人工核对；单位转换不是 PDF 内容自动识别。

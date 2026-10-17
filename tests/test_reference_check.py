@@ -87,3 +87,35 @@ def test_cli_exit_codes(tmp_path,capsys):
     capsys.readouterr();args.document=tmp_path/'missing.pdf'
     assert cmd_reference_check(args)==2
     assert not args.document.exists()
+
+
+def test_selected_fields_are_explicit_and_unchecked_counted(tmp_path):
+    paths=setup_files(tmp_path)
+    for p in paths[:2]:
+        edit(p,lambda d:d['records'].append(dict(d['records'][0],field='total_equity')))
+    edit(paths[2],lambda d:d.update(input_sha256=[sha(p) for p in paths[:2]]))
+    with pytest.raises(ValueError,match='same exact identities'):check_reference(*paths)
+    edit(paths[2],lambda d:d.update(coverage='selected-fields'))
+    result=check_reference(*paths)
+    assert result['total']==1 and result['input_pairs']==2 and result['unchecked_pairs']==1
+    assert result['coverage']=='selected-fields'
+
+
+@pytest.mark.parametrize('mode',['auto','',True])
+def test_unsupported_coverage_rejected(tmp_path,mode):
+    p=setup_files(tmp_path);edit(p[2],lambda d:d.update(coverage=mode))
+    with pytest.raises(ValueError,match='coverage'):check_reference(*p)
+
+
+@pytest.mark.parametrize('unit,printed',[('million_yuan','0.0001'),('wan_yuan','0.01'),('yuan','100')])
+def test_explicit_printed_unit_conversion(tmp_path,unit,printed):
+    p=setup_files(tmp_path)
+    edit(p[2],lambda d:d['records'][0].update(document_unit=unit,document_value=printed))
+    assert check_reference(*p)['counts']=={'match_reference':1}
+
+
+@pytest.mark.parametrize('unit,printed',[('million_yuan','100'),('unknown','100'),('yuan',None)])
+def test_bad_document_units_or_wrong_conversion_rejected(tmp_path,unit,printed):
+    p=setup_files(tmp_path)
+    edit(p[2],lambda d:d['records'][0].update(document_unit=unit,document_value=printed))
+    with pytest.raises(ValueError):check_reference(*p)

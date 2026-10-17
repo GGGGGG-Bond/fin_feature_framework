@@ -10,6 +10,9 @@ from pathlib import Path
 from fin_feature.reconcile import index_document, number, UNITS, FIELDS, known
 
 
+DOCUMENT_UNITS = {'yuan': Decimal(1), 'wan_yuan': Decimal(10000), 'million_yuan': Decimal(1000000)}
+
+
 def digest(body):
     return hashlib.sha256(body).hexdigest()
 
@@ -37,8 +40,13 @@ def check_reference(left_path, right_path, reference_path, document_path):
     # Reuse strict identity/duplicate validation; comparison does not change source semantics.
     refs = index_document(dict(schema='reconcile-v1',source='official-reference',upstream='issuer',
                                records=reference.get('records')))
-    if refs.keys()!=li.keys() or refs.keys()!=ri.keys():
+    coverage = reference.get('coverage', 'exact')
+    if coverage not in ('exact', 'selected-fields'):
+        raise ValueError('unsupported reference coverage mode')
+    if coverage == 'exact' and (refs.keys()!=li.keys() or refs.keys()!=ri.keys()):
         raise ValueError('reference and both inputs must cover the same exact identities')
+    if not refs.keys() <= li.keys() or not refs.keys() <= ri.keys():
+        raise ValueError('selected reference identities must exist in both inputs')
     sources = reference.get('source_units',{})
     if set(sources)!=set((left['source'],right['source'])) or any(v not in UNITS for v in sources.values()):
         raise ValueError('explicit reviewed unit per provider required')
@@ -53,8 +61,18 @@ def check_reference(left_path, right_path, reference_path, document_path):
                 or not known(ref.get('column_label')) or ref.get('table_type')!=FIELDS[key[2]][0]
                 or ref.get('period_basis')!=FIELDS[key[2]][1] or expected is None):
             raise ValueError('reference needs finite amount, positive page, row, column and correct table/basis')
+        if 'document_value' in ref or 'document_unit' in ref:
+            printed = number(ref.get('document_value'))
+            multiplier = DOCUMENT_UNITS.get(ref.get('document_unit'))
+            if printed is None or multiplier is None:
+                raise ValueError('invalid printed document amount/unit')
+            with localcontext() as ctx:
+                ctx.prec = 60
+                if printed * multiplier != expected:
+                    raise ValueError('printed amount conversion differs from reference value')
         row=dict(secucode=key[0],report_date=key[1],field=key[2],page=page,
                  row_label=ref['row_label'],column_label=ref['column_label'],reference_value=str(expected),
+                 document_value=ref.get('document_value'),document_unit=ref.get('document_unit'),
                  status='match_reference',providers={})
         for doc,items in ((left,li),(right,ri)):
             original=items[key];value=number(original.get('value'));source=doc['source']
@@ -82,6 +100,8 @@ def check_reference(left_path, right_path, reference_path, document_path):
                 input_sha256=hashes,reference_sha256=digest(payloads[2]),document=document,
                 document_hash_verified=True,document_content_check='manual review declared in reference file',
                 reviewed_by=reference['reviewed_by'],absolute_tolerance=str(tolerance),
+                coverage=coverage,input_pairs=len(li.keys() | ri.keys()),
+                unchecked_pairs=len((li.keys() | ri.keys()) - refs.keys()),
                 historical_visibility_verified=False,provider_revision_alignment_verified=False,
                 total=len(results),counts=dict(Counter(r['status'] for r in results)),results=results)
 
