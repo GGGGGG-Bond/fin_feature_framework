@@ -197,7 +197,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:$PWD/tests" .venv/bin/python -I docs/
 
 固定 `0710d8d` 复审通过：F1-F3 关闭，此前整改保持有效，未发现新的阻断项；离线 420 passed、11 deselected，独立验收 28 组全部通过。审阅材料：分支 `docs/review-stage2b1-0710d8d`（commit `1ce764a`）。
 
-## 2B-2 实现映射（实现 agent 记录，2026-10-17；待独立审阅）
+## 2B-2 实现映射（实现 agent 记录，2026-10-17；已复审并完成 R1-R3 整改，待新 head 复审）
 
 固定实现：分支 `feat/stage2b-2`，基准 `0710d8d`。命令：
 
@@ -223,8 +223,20 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/test_capture_paginati
 | B28 | `test_ingestion_coordinator.py::test_b28_invalid_row_fails_whole_unit_without_partial_writes`（公司不符/报告期非法：整单元回滚、失败响应审计保留）、`test_b28_mapping_failure_rolls_back_unit`（映射失败注入） |
 | B29 | `test_ingestion_coordinator.py::test_b29_null_notice_compat_raw_is_idempotent`（空公告重复成功抓取不新增、内容变化保留历史、raw 原计量） |
 | B30 | `test_ingestion_coordinator.py::test_b30_failure_at_each_write_point_rolls_back_all_business_tables`（兼容 raw/版本/当前投影/水位/成功结算五点注入：各业务表一致回滚、证据保留）、`test_b30_successful_unit_unaffected_by_other_unit_failure` |
-| B31 | `test_ingestion_coordinator.py::test_b31_commit_failure_rolls_back_and_reports_failed`（提交失败回滚、`exit_code=1`、内存计数不采用、unit 标 failed） |
+| B31 | `test_ingestion_coordinator.py::test_b31_commit_failure_rolls_back_and_reports_failed`（真实 `commit()` 抛错：UOW 回滚、连接无残留事务、单元/批次 failed、无业务写入）；真实 SQLite 锁失败与 commit+rollback 双失败见 R1 |
 | B32 | `test_ingestion_coordinator.py::test_b32_active_outer_transaction_rejected_before_request`（请求前拒绝、无 GET/run/attempt、外层结束后可运行；底层嵌套 UOW 回归继续由 2A 测试覆盖） |
 | B33 | `test_ingestion_coordinator.py::test_b33_observed_at_is_real_receive_utc_for_first_and_repeat`（首次与重复观察 observed_at 均等于响应真实接收 UTC）、`test_b33_invalid_notice_is_unknown_and_never_backfilled`（非法公告置未知、不用 fetched_at 补齐、不推进水位） |
 
 补充：`test_ingestion_coordinator.py::test_run_and_unit_identity_and_request_scope` 断言 run/unit 身份、重复计划只请求一次、`request_scope` 不含页号/重试号且含固定映射版本。B31 的 CLI 非零退出在 2B-3 接线后由 CLI 用例复验；本批以 `RunResult.exit_code` 断言等价语义。未在本批覆盖：B34-B46（2B-3）。
+
+## 2B-2 复审整改映射（实现 agent 记录，2026-10-17；待新 head 复审）
+
+固定 `9277eeb` 复审的 2 P1 + 1 P2 整改用例（均为 `tests/test_ingestion_coordinator.py`）：
+
+| ID | 用例 |
+|---|---|
+| R1 | `test_r1_real_commit_failure_rolls_back_and_reports_failed`（外部读锁使 SQLite 自身 commit 失败：不预先回滚；断言批次/单元 failed、连接无活动事务、先前成功单元与版本/水位不变、已有/重连 reader 可读、失败单元因外部锁保留 running）；`test_r1_unrecoverable_rollback_stops_run_without_claiming_success`（commit+rollback 双失败：`transaction_broken`、终止运行、批次 failed 不虚报）；`test_b31_commit_failure_rolls_back_and_reports_failed`（commit() 自身抛错、可回滚路径） |
+| R2 | `test_r2_same_notice_stale_record_does_not_downgrade_compat_raw`（同公告日较旧 entry 后到：兼容 raw、阶段一实际去重、当前版本一致为 200；较新修订升级 300；失败批次回滚后原计量不变） |
+| R3 | `test_r3_mixed_report_date_formats_use_one_selection_rule`（正序/逆序参数化：当前版本、兼容 raw、阶段一选值一致，版本保留原始日期）；`test_r3_cross_batch_mixed_format_matches_stage1`（跨批次历史候选同口径） |
+
+验证命令与 2B-2 相同；整改后全量 475 passed、11 deselected，专项 55 passed。
