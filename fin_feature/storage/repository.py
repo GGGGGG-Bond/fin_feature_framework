@@ -1451,6 +1451,23 @@ class Repository:
             raw_fields_json=raw_fields_json,
         )
 
+    def _final_attempts_by_page(self, unit_id: str) -> dict[int, sqlite3.Row]:
+        """D2：从数据库事实确定每页的最终尝试（同页最大 http_attempt）。
+
+        最终页身份不能由调用方列表决定——必须查询持久化的 attempt 集合。
+        返回 {page_number: attempt_row}。
+        """
+        rows = self.conn.execute(
+            "SELECT * FROM ingest_attempt WHERE unit_id = ? ORDER BY page_number, http_attempt",
+            (unit_id,),
+        ).fetchall()
+        final_by_page: dict[int, sqlite3.Row] = {}
+        for row in rows:
+            page = row["page_number"]
+            if page not in final_by_page or row["http_attempt"] > final_by_page[page]["http_attempt"]:
+                final_by_page[page] = row
+        return final_by_page
+
     def _verify_unit_evidence(
         self, *, unit_evidence, snapshot_id, row_index, secucode, table_type, run_id,
         source_name, standardized_dict, raw_fields_json,
@@ -1498,6 +1515,10 @@ class Repository:
             raise ValueError(
                 f"本次快照 {snapshot_id} 不在单元最终页证据集合中：不能把非最终页当业务输入"
             )
+        # D2：最终页身份由数据库事实决定，不能只信调用方给出的快照列表。
+        # 查询本单元每页的实际最终尝试（同页最大 http_attempt），证明引用的快照必须
+        # 恰为该最终尝试的唯一 snapshot——旧成功快照在后续失败/running 尝试存在时不能冒充。
+        final_attempts_by_page = self._final_attempts_by_page(unit["unit_id"])
         for page_snapshot_id in page_ids:
             page = self.get_snapshot(page_snapshot_id)
             if page is None:
@@ -1510,6 +1531,20 @@ class Repository:
             if attempt is None or attempt["unit_id"] != unit["unit_id"]:
                 raise ValueError(
                     f"单元页证据 {page_snapshot_id} 不属于单元 {unit['unit_id']}"
+                )
+            # D2：核对证明引用的快照恰为该页最终尝试的唯一 snapshot
+            page_number = attempt["page_number"]
+            final_attempt = final_attempts_by_page.get(page_number)
+            if final_attempt is None:
+                raise ValueError(
+                    f"单元页 {page_number} 没有最终尝试记录，无法确定最终页身份"
+                )
+            if final_attempt["attempt_id"] != attempt["attempt_id"]:
+                raise ValueError(
+                    f"单元页 {page_number} 的最终尝试是 http_attempt="
+                    f"{final_attempt['http_attempt']}（attempt_id="
+                    f"{final_attempt['attempt_id']}），但证明引用的是 http_attempt="
+                    f"{attempt['http_attempt']}：不能把非最终页当业务输入"
                 )
             # C2：终态失败的响应不能凭 valid 标志冒充业务输入。最终尝试必须 outcome=ok
             # 且 HTTP 状态成功（2xx）；http_error/business_error 等终态失败即使文件有效、

@@ -228,10 +228,39 @@ def _index_exists(conn: sqlite3.Connection, index: str) -> bool:
     return cur.fetchone() is not None
 
 
-def _index_definition(conn: sqlite3.Connection, index: str) -> dict | None:
-    """读取索引定义：unique、表、列、是否部分索引（有 WHERE）。
+def _normalize_index_predicate(sql: str) -> set[str] | None:
+    """从 CREATE INDEX 的 SQL 文本提取规范化的部分条件集合。
 
-    C1：同名普通索引冒充唯一索引、错列或错误部分条件都必须能被识别。
+    D1：不能只看有无 WHERE——WHERE 0 / 反向 IS NULL / 遗漏非空条件都须拒绝。
+    把 WHERE 子句拆成以 AND 连接的条件，规范化为 "列名 IS NOT NULL" 形式。
+    无法识别为等价写法时返回 None（调用方应拒绝，不静默接受）。
+    """
+    import re
+    upper = sql.upper()
+    if " WHERE " not in upper:
+        return set()
+    # 提取 WHERE 之后的全部文本（去掉末尾分号/空白）
+    where_idx = upper.index(" WHERE ") + len(" WHERE ")
+    clause = sql[where_idx:].strip().rstrip(";").strip()
+    conditions = re.split(r"\s+AND\s+", clause, flags=re.IGNORECASE)
+    normalized: set[str] = set()
+    for cond in conditions:
+        cond = cond.strip()
+        # 匹配 "列名 IS NOT NULL"（允许任意空白）
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s+IS\s+NOT\s+NULL\s*$", cond, re.IGNORECASE)
+        if m:
+            normalized.add(f"{m.group(1).lower()} IS NOT NULL")
+        else:
+            # 无法识别的条件——返回 None 表示不可证明等价
+            return None
+    return normalized
+
+
+def _index_definition(conn: sqlite3.Connection, index: str) -> dict | None:
+    """读取索引定义：unique、表、列、部分条件谓词。
+
+    C1/D1：同名普通索引冒充唯一索引、错列或错误部分条件都必须能被识别。
+    D1：partial 布尔不够——具体谓词须可比较；无法证明等价时返回 predicate=None。
     返回 None 表示索引不存在。
     """
     row = conn.execute(
@@ -243,6 +272,7 @@ def _index_definition(conn: sqlite3.Connection, index: str) -> dict | None:
     table, sql = row[0], row[1] or ""
     # sqlite_master.sql 对自动索引（如 UNIQUE 约束）为 NULL；显式 CREATE INDEX 才有文本
     is_partial = " WHERE " in sql.upper()
+    predicate = _normalize_index_predicate(sql)
     # unique 由 PRAGMA index_list 给出（origin='c' 为约束自动索引，也唯一）
     unique = False
     columns: tuple[str, ...] = ()
@@ -252,7 +282,8 @@ def _index_definition(conn: sqlite3.Connection, index: str) -> dict | None:
             break
     for col in conn.execute(f"PRAGMA index_info({index})").fetchall():
         columns += (col[2],)
-    return {"unique": unique, "table": table, "columns": columns, "partial": is_partial}
+    return {"unique": unique, "table": table, "columns": columns,
+            "partial": is_partial, "predicate": predicate}
 
 
 def _add_features_columns(conn: sqlite3.Connection) -> None:
@@ -297,13 +328,18 @@ V4_INGEST_ATTEMPT_REQUIRED_COLUMNS = (
     "ended_at", "outcome", "error_code", "detail",
 )
 
-# C1：关键索引的期望定义（unique、列集、部分条件），用于结构复查。
+# C1/D1：关键索引的期望定义（unique、列集、具体部分谓词），用于结构复查。
 # 同名但非唯一、错列或错误部分条件的索引必须被识别为缺口。
+# D1：partial 布尔不够——WHERE 0 / 反向 IS NULL / 遗漏非空条件都须拒绝。
+# predicate 是规范化的部分条件集合（列名 IS NOT NULL），用于精确比较。
 V4_REQUIRED_INDEX_SPECS = {
     "uq_raw_snapshot_attempt": {"unique": True, "table": "raw_snapshot",
-                                "columns": ("attempt_id",), "partial": True},
+                                "columns": ("attempt_id",), "partial": True,
+                                "predicate": {"attempt_id IS NOT NULL"}},
     "uq_observation_source_row": {"unique": True, "table": "statement_observation",
-                                  "columns": ("snapshot_id", "row_index"), "partial": True},
+                                  "columns": ("snapshot_id", "row_index"), "partial": True,
+                                  "predicate": {"snapshot_id IS NOT NULL",
+                                                "row_index IS NOT NULL"}},
 }
 
 
@@ -375,7 +411,7 @@ def collect_v4_structure_gaps(conn: sqlite3.Connection) -> list[str]:
     for column in V4_INGEST_ATTEMPT_REQUIRED_COLUMNS:
         if not _column_exists(conn, "ingest_attempt", column):
             gaps.append(f"缺少列 ingest_attempt.{column}")
-    # C1：关键索引不只查存在，还查定义（unique/列/部分条件）
+    # C1/D1：关键索引不只查存在，还查定义（unique/列/具体部分谓词）
     for index in V4_REQUIRED_INDEXES:
         if not _index_exists(conn, index):
             gaps.append(f"缺少索引 {index}")
@@ -395,6 +431,20 @@ def collect_v4_structure_gaps(conn: sqlite3.Connection) -> list[str]:
             )
         if spec["partial"] and not actual["partial"]:
             gaps.append(f"索引 {index} 应为部分索引（含 WHERE）但实际无部分条件")
+        # D1：比较具体部分谓词，不只看有无 WHERE
+        expected_pred = spec.get("predicate")
+        actual_pred = actual.get("predicate")
+        if expected_pred is not None:
+            if actual_pred is None:
+                gaps.append(
+                    f"索引 {index} 部分谓词无法识别为等价写法，拒绝接受："
+                    f"期望 {sorted(expected_pred)}"
+                )
+            elif actual_pred != expected_pred:
+                gaps.append(
+                    f"索引 {index} 部分谓词不符：期望 {sorted(expected_pred)}，"
+                    f"实际 {sorted(actual_pred)}"
+                )
     return gaps
 
 

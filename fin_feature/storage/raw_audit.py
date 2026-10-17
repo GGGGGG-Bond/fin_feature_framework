@@ -250,9 +250,17 @@ def _check_unit_evidence(conn, raw_store, unit, add) -> None:
                 snapshot_id=snapshot["snapshot_id"],
             )
             continue
-        # C3：解析原页信封，核对声明范围与连续页号
+        # C3/D3：解析原页信封，核对声明范围与连续页号。
+        # D3：解析失败不能跳过——非 JSON/HTML/缺 result/非法类型都须报告诊断。
         envelope = _parse_page_envelope(raw_store, snapshot)
-        if envelope is not None:
+        if envelope["error"] is not None:
+            add(
+                "envelope_parse_failed", SEVERITY_ERROR,
+                f"成功单元的最终页 {page_number} 信封解析失败：{envelope['error']}",
+                run_id=unit["run_id"], unit_id=unit["unit_id"],
+                snapshot_id=snapshot["snapshot_id"],
+            )
+        elif envelope["pages"] is not None:
             envelopes.append(envelope)
         # 实际行数取快照 record_count（各页本页行数之和应等于声明总记录数）
         if snapshot["record_count"] is not None:
@@ -263,9 +271,17 @@ def _check_unit_evidence(conn, raw_store, unit, add) -> None:
         _check_page_completeness(conn, unit, envelopes, final_by_page, total_rows, add)
 
 
-def _parse_page_envelope(raw_store: RawStore, snapshot) -> dict | None:
-    """从原体响应解析分页信封（pages/count）。解析失败返回 None（不阻断对账）。"""
+def _parse_page_envelope(raw_store: RawStore, snapshot) -> dict:
+    """从原体响应解析分页信封。
+
+    D3：返回强类型结果，不用 None 表示"跳过"。
+    - pages：声明的总页数（必需，缺失/非 int 则 error）
+    - count：声明的总记录数（可选，缺失不影响页数完整性检查）
+    - error：解析失败原因（非 None 时该页须报告诊断，不能 clean）
+    文件错误（缺文件/哈希不符）由文件诊断记录，不在此重复；JSON/结构错误须独立诊断。
+    """
     import json
+    result = {"pages": None, "count": None, "error": None}
     try:
         body = raw_store.verify({
             "file_path": snapshot["file_path"],
@@ -273,22 +289,38 @@ def _parse_page_envelope(raw_store: RawStore, snapshot) -> dict | None:
             "raw_bytes": snapshot["raw_bytes"],
         }).body
         payload = json.loads(body)
-    except (RawStoreVerifyError, RawStoreError, ValueError, json.JSONDecodeError):
-        return None
-    result = payload.get("result") if isinstance(payload, dict) else None
-    if not isinstance(result, dict):
-        return None
-    pages = result.get("pages")
-    count = result.get("count")
-    if not isinstance(pages, int) or not isinstance(count, int):
-        return None
-    return {"pages": pages, "count": count}
+    except (RawStoreVerifyError, RawStoreError):
+        # 文件级错误由 _check_snapshots 报告，信封检查不重复
+        result["error"] = "文件不可读（见文件诊断）"
+        return result
+    except (ValueError, json.JSONDecodeError) as exc:
+        result["error"] = f"响应非合法 JSON（{exc}）"
+        return result
+    if not isinstance(payload, dict):
+        result["error"] = f"响应顶层非对象：{type(payload).__name__}"
+        return result
+    inner = payload.get("result")
+    if not isinstance(inner, dict):
+        result["error"] = "响应缺少 result 对象"
+        return result
+    pages = inner.get("pages")
+    if not isinstance(pages, int) or pages < 1:
+        result["error"] = f"信封 pages 非正整数：{pages!r}"
+        return result
+    result["pages"] = pages
+    count = inner.get("count")
+    if count is not None:
+        if not isinstance(count, int) or count < 0:
+            result["error"] = f"信封 count 非非负整数：{count!r}"
+            return result
+        result["count"] = count
+    return result
 
 
 def _check_page_completeness(conn, unit, envelopes, final_by_page, total_rows, add) -> None:
     """C3：核对声明页数、连续页号与合计行数。缺页不得 clean。
 
-    信封 count 是声明的总记录数（各页应一致），实际行数是各页 record_count 之和。
+    D3：count 可选——缺失时只跳过总行数一致性检查，不影响页数完整性。
     """
     # 各页声明的总页数应一致
     declared_pages_set = {e["pages"] for e in envelopes}
@@ -310,22 +342,24 @@ def _check_page_completeness(conn, unit, envelopes, final_by_page, total_rows, a
             f"成功单元声明 {declared_pages} 页，但缺少页 {missing}",
             run_id=unit["run_id"], unit_id=unit["unit_id"],
         )
-    # 各页声明的总记录数应一致，且等于实际各页 record_count 之和
-    declared_count_set = {e["count"] for e in envelopes}
-    if len(declared_count_set) != 1:
-        add(
-            "inconsistent_declared_count", SEVERITY_ERROR,
-            f"成功单元各页声明的总记录数不一致：{sorted(declared_count_set)}",
-            run_id=unit["run_id"], unit_id=unit["unit_id"],
-        )
-        return
-    declared_count = declared_count_set.pop()
-    if declared_count != total_rows:
-        add(
-            "row_count_mismatch", SEVERITY_ERROR,
-            f"成功单元声明总记录数 count={declared_count}，但实际行数 {total_rows}",
-            run_id=unit["run_id"], unit_id=unit["unit_id"],
-        )
+    # D3：count 可选——只在所有页都提供 count 时检查总行数一致性
+    counts = [e["count"] for e in envelopes if e["count"] is not None]
+    if len(counts) == len(envelopes):
+        declared_count_set = set(counts)
+        if len(declared_count_set) != 1:
+            add(
+                "inconsistent_declared_count", SEVERITY_ERROR,
+                f"成功单元各页声明的总记录数不一致：{sorted(declared_count_set)}",
+                run_id=unit["run_id"], unit_id=unit["unit_id"],
+            )
+            return
+        declared_count = declared_count_set.pop()
+        if declared_count != total_rows:
+            add(
+                "row_count_mismatch", SEVERITY_ERROR,
+                f"成功单元声明总记录数 count={declared_count}，但实际行数 {total_rows}",
+                run_id=unit["run_id"], unit_id=unit["unit_id"],
+            )
 
 
 def _check_attempts(conn, run_id, add) -> None:
