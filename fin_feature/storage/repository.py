@@ -426,6 +426,22 @@ class Repository:
         self.conn.executemany(sql, safe_rows)
         return len(safe_rows)
 
+    def upsert_versioned_feature(self, record: dict) -> int:
+        """Write a lineage-bearing current projection; preserve legacy and other definitions."""
+        old = self.conn.execute(
+            "SELECT definition_version FROM features WHERE secucode=? AND report_date=? AND feature_name=?",
+            (record['secucode'], record['report_date'], record['feature_name']),
+        ).fetchone()
+        if old is not None and old[0] != record['definition_version']:
+            return 0
+        columns = ('secucode', 'report_date', 'feature_name', 'feature_value', 'feature_group',
+                   'definition_version', 'compute_run_id', 'input_version_ids', 'code_commit',
+                   'config_hash', 'as_of_date', 'not_computable_reason')
+        self.conn.execute(
+            'INSERT OR REPLACE INTO features (' + ','.join(columns) + ') VALUES (' +
+            ','.join('?' for _ in columns) + ')', tuple(record[c] for c in columns))
+        return 1
+
     def get_features(
         self, secucode: str, report_date: str | None = None, feature_group: str | None = None,
         definition_version: str = "stage1-v1",

@@ -147,7 +147,7 @@ class TestB09UpgradeFromV3:
         versions = [r[0] for r in conn.execute(
             "SELECT version FROM schema_version ORDER BY version"
         )]
-        assert versions == [1, 2, 3, 4]
+        assert versions == [v for v, _, _ in m.MIGRATIONS]
         assert collect_v4_structure_gaps(conn) == []
         conn.close()
 
@@ -422,7 +422,7 @@ class TestR1InitSchemaBackup:
         init_schema(str(db_path))
 
         conn = get_connection(str(db_path))
-        assert m._get_current_version(conn) == 4
+        assert m._get_current_version(conn) == LATEST
         backups = [p.name for p in tmp_path.iterdir() if "backup" in p.name]
         assert len(backups) == 1, "含历史数据的库升级前必须生成唯一备份"
         # 备份是升级前的 v3 快照
@@ -461,7 +461,7 @@ class TestR1InitSchemaBackup:
         init_schema(str(db_path))
 
         conn = get_connection(str(db_path))
-        assert m._get_current_version(conn) == 4
+        assert m._get_current_version(conn) == LATEST
         backups = [p.name for p in tmp_path.iterdir() if "backup" in p.name]
         assert backups == []
         conn.close()

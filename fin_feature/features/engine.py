@@ -65,6 +65,8 @@ def _resolve_industry_type(merged: dict) -> str:
     不靠证券名称或数值猜测，仅依据来源提供的行业名称。
     金融企业相关指标返回 None + not_applicable。
     """
+    if merged.get("industry_type") in ("financial", "industrial"):
+        return merged["industry_type"]
     industry_name = merged.get("industry_name")
     if not industry_name or not isinstance(industry_name, str):
         return "unknown"
@@ -79,7 +81,11 @@ def _standardize_merged(merged: dict) -> tuple[dict, list[dict]]:
     返回 (标准化值字典, 诊断列表)。
     保留 __sources__ 字段级来源元信息，供跨周期可比性检查使用。
     """
-    std_values, diags = standardize_record(merged, _STANDARDIZE_FIELDS)
+    if merged.get("__value_format__") == "standard-v1":
+        std_values = {f: merged.get(f) for f in _STANDARDIZE_FIELDS}
+        diags = []
+    else:
+        std_values, diags = standardize_record(merged, _STANDARDIZE_FIELDS)
     # 保留标识字段（不标准化）
     for ident in ["secucode", "report_date", "security_code", "security_name", "industry_name"]:
         if ident in merged:
@@ -124,6 +130,7 @@ def _check_period_comparability(
             comparison[field] = None
             diags.append({
                 "field": field,
+                "report_date": comparison.get("report_date"),
                 "reason_code": "incomparable_basis",
                 "detail": f"{comparison_label}: {field} 缺少来源证据，可比性未知，拒算",
             })
@@ -139,6 +146,7 @@ def _check_period_comparability(
             comparison[field] = None
             diags.append({
                 "field": field,
+                "report_date": comparison.get("report_date"),
                 "reason_code": "incomparable_basis",
                 "detail": (
                     f"{comparison_label}: {field} 来源表不一致 "
@@ -151,6 +159,7 @@ def _check_period_comparability(
             comparison[field] = None
             diags.append({
                 "field": field,
+                "report_date": comparison.get("report_date"),
                 "reason_code": "incomparable_basis",
                 "detail": (
                     f"{comparison_label}: {field} 来源表相同({cur_src.table_suffix}) "
@@ -372,12 +381,18 @@ def _build_context(
     )
 
 
-def compute_all(repo: Repository, groups: list[str] | None = None) -> int:
+def compute_all(repo: Repository, groups: list[str] | None = None, *, input_mode: str = "legacy", config: dict | None = None) -> int:
     """计算所有特征并写入 features 表。
 
     groups: 指定计算的特征组列表，None 表示计算全部。
     返回写入的特征记录数。
     """
+
+    if input_mode == "versions":
+        from fin_feature.features.versioned import compute_versioned
+        return compute_versioned(repo, groups, config)
+    if input_mode != "legacy":
+        raise ValueError("unknown feature input mode")
 
     # 获取所有已注册的特征类
     if groups:

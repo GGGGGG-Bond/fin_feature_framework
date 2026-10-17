@@ -58,3 +58,7 @@ FI=主要财务指标，IS=利润表，BS=资产负债表。字段映射为候�
 实际原字段依据项目 field_mapping.py 及当天小样本探测；[AKShare 财务数据说明](https://akshare.akfamily.xyz/data/stock/stock.html)可作为字段单位核验入口。[Tushare 利润表说明](https://tushare.pro/document/2?doc_id=33)展示了合并、单季、调整前后等不同类型，仅用于提醒模型必须区分，不能用于解释另一来源的原码。
 
 实现 agent 应把新增单位或代码映射的证据链接、样本范围与结果写入 progress 和映射测试。未知信息不得通过 fixture 的已知口径倒推为真实来源已经验证。
+
+## 2026-10-17：2C 实现补充
+
+本字典数值单位不变；CLI 的新清洗/特征路径改用 statement_version 标准值，兼容 clean 数值列仍为原计量。record_ref 现可指向准确 version_id，clean_ref 指向标准化清洗结果；旧行不猜测回填。运行时单位 fixture 不重写已持久化标准值，未知单位依然拒算。见 [2C 模型](../stage-2/data-model.md)与[操作指南](../stage-2/2c-operations.md)。

@@ -124,6 +124,7 @@ def merge_three_tables_semantic(
             sources[field_name] = FieldSource(
                 table_suffix=auth_table,
                 notice_date=auth_record.get("notice_date") if auth_record else None,
+                record_ref=auth_record.get("record_ref") if auth_record else None,
             )
             # 检查冲突：回退表也有有效值
             if fb_value is not None and fb_value != auth_value:
@@ -154,7 +155,7 @@ def merge_three_tables_semantic(
             sources[field_name] = FieldSource(table_suffix=auth_table)
 
     # 保留标识字段（从任一可用表取）
-    for ident_field in ["secucode", "report_date", "security_code", "security_name", "industry_name"]:
+    for ident_field in ["secucode", "report_date", "security_code", "security_name", "industry_name", "industry_type"]:
         for table_suffix in ["income_statement", "financial_indicator", "balance_sheet"]:
             rec = records.get(table_suffix)
             if rec and rec.get(ident_field) is not None:
@@ -162,9 +163,17 @@ def merge_three_tables_semantic(
                 sources[ident_field] = FieldSource(
                     table_suffix=table_suffix,
                     notice_date=rec.get("notice_date"),
+                    record_ref=rec.get("record_ref"),
                 )
                 break
 
+    standardized = [bool(rec.get("__standardized__")) for rec in records.values() if rec]
+    if any(standardized) and not all(standardized):
+        raise ValueError("cannot merge legacy raw units and standardized records")
+    if standardized and all(standardized):
+        merged["__value_format__"] = "standard-v1"
+    for d in diagnostics:
+        d["report_date"] = report_date
     merged["__sources__"] = sources
     return (merged, diagnostics)
 
@@ -210,6 +219,7 @@ def merge_three_tables_semantic_with_fallback_flag(
             sources[field_name] = FieldSource(
                 table_suffix=auth_table,
                 notice_date=auth_record.get("notice_date") if auth_record else None,
+                record_ref=auth_record.get("record_ref") if auth_record else None,
             )
             if fb_value is not None and fb_value != auth_value:
                 diagnostics.append({
@@ -224,6 +234,7 @@ def merge_three_tables_semantic_with_fallback_flag(
             sources[field_name] = FieldSource(
                 table_suffix=fallback_table,
                 notice_date=fb_record.get("notice_date") if fb_record else None,
+                record_ref=fb_record.get("record_ref") if fb_record else None,
                 comparable=True,  # 受控 fixture 声明同口径可比
             )
             diagnostics.append({
@@ -236,7 +247,7 @@ def merge_three_tables_semantic_with_fallback_flag(
             merged[field_name] = None
             sources[field_name] = FieldSource(table_suffix=auth_table)
 
-    for ident_field in ["secucode", "report_date", "security_code", "security_name", "industry_name"]:
+    for ident_field in ["secucode", "report_date", "security_code", "security_name", "industry_name", "industry_type"]:
         for table_suffix in ["income_statement", "financial_indicator", "balance_sheet"]:
             rec = records.get(table_suffix)
             if rec and rec.get(ident_field) is not None:
@@ -244,8 +255,16 @@ def merge_three_tables_semantic_with_fallback_flag(
                 sources[ident_field] = FieldSource(
                     table_suffix=table_suffix,
                     notice_date=rec.get("notice_date"),
+                    record_ref=rec.get("record_ref"),
                 )
                 break
 
+    standardized = [bool(rec.get("__standardized__")) for rec in records.values() if rec]
+    if any(standardized) and not all(standardized):
+        raise ValueError("cannot merge legacy raw units and standardized records")
+    if standardized and all(standardized):
+        merged["__value_format__"] = "standard-v1"
+    for d in diagnostics:
+        d["report_date"] = report_date
     merged["__sources__"] = sources
     return (merged, diagnostics)

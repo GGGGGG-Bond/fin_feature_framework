@@ -183,3 +183,21 @@ ALTER TABLE features ADD COLUMN not_computable_reason TEXT;
 ## 2B 增量规范入口（待实现）
 
 本文记录已发布 2A/v3；2B 的 v4 增量表、列和约束见 [2B 数据与迁移契约](2b-schema.md)。不得通过修改旧迁移 DDL 提前创建这些对象，也不得将规范交付表述为 v4 已运行。
+
+## 2C / v5 增量（2026-10-17，待 MR）
+
+上文为 2A/v3 发布时的数据模型快照；v4 已随 MR!8 合入，原始模型不就地改写。2C 代码 `9f9a26d` 新增：
+
+| 对象/字段 | 语义与约束 |
+|---|---|
+| clean_statement.clean_id | 固定版本 + 配置哈希生成的 SHA-256 标识；主键非空 |
+| record_ref | statement_version.version_id 外键，不据旧 clean 原值猜测回填 |
+| config_hash / config_snapshot | 有效默认规则与配置覆盖、PIPELINE_VERSION；与 record_ref 联合唯一 |
+| status | kept / dropped；丢弃也保留结果与诊断 |
+| standardized_fields | 标准化版本输入经缺失策略处理的标准值 JSON，无二次单位转换 |
+| compatibility_fields / diagnostics | 原计量当前投影、规则与数据问题 JSON |
+| clean_selection | 公司/报告期/表类型主键，clean_ref 外键；完整记录包括 dropped 的当前选择 |
+| clean_*.record_ref / clean_ref | 可空版本/清洗外键；旧行仍为 NULL，新 clean 数值列单位不变 |
+| features 与 feature_compute_log | 使用既有 2A 血缘列；每次计算追加日志，当前投影只指向最近成功计算 |
+
+DDL 和结构核验见 `fin_feature/storage/clean_model.py`。主键、联合唯一、FK、状态和哈希 CHECK 纳入 v5 核验；新表不加入旧版 ALL_DDL 或回改旧迁移。as_of_date 保持 NULL，不增加截至日查询。

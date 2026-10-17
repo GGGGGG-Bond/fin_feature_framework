@@ -106,12 +106,18 @@ def cmd_clean(args) -> None:
     logger = setup_logger(level=config.logging.get("level", "INFO"),
                           log_file=config.logging.get("file"))
     from fin_feature.cleaning.pipeline import run_cleaning
+    from fin_feature.cleaning.versioned import effective_rules
+    effective_rules(config.cleaning)
 
     db, repo = _get_db_and_repo(config)
     logger.info("开始数据清洗...")
     # 传入 YAML 清洗配置
     cleaning_config = config.cleaning
-    stats = run_cleaning(repo, config=cleaning_config)
+    try:
+        stats = run_cleaning(repo, config=cleaning_config, input_mode="versions")
+    except BaseException:
+        db.close()
+        raise
     for s in stats:
         logger.info(
             "表 %s: 原始%d -> 去重%d -> 丢弃%d -> 清洗%d",
@@ -126,11 +132,17 @@ def cmd_features(args) -> None:
     logger = setup_logger(level=config.logging.get("level", "INFO"),
                           log_file=config.logging.get("file"))
     from fin_feature.features.engine import compute_all
+    from fin_feature.cleaning.versioned import effective_rules
+    effective_rules(config.cleaning)
 
     db, repo = _get_db_and_repo(config)
     logger.info("开始特征计算...")
     groups = config.features.get("groups")
-    count = compute_all(repo, groups=groups)
+    try:
+        count = compute_all(repo, groups=groups, input_mode="versions", config=config.cleaning)
+    except BaseException:
+        db.close()
+        raise
     logger.info("特征计算完成：%d 条", count)
     db.close()
 
@@ -264,8 +276,8 @@ def main() -> None:
 
     sub.add_parser("crawl", help="发现前 N 家公司并留证采集财务报表",
                    description="先完整核验股票发现范围，再采集配置报表；0 成功，1 失败，2 非法配置。")
-    sub.add_parser("clean", help="清洗兼容 raw 表（stage1-v1）")
-    sub.add_parser("features", help="从 clean 表计算特征")
+    sub.add_parser("clean", help="清洗当前版本并保存标准值与血缘")
+    sub.add_parser("features", help="从版本清洗结果计算特征并追加不可变日志")
     sub.add_parser("quality", help="生成数据质量报告")
     sub.add_parser("incremental", help="对本地股票列表按报告期回扫并留证采集",
                    description="使用全部本地 stock_list；recent_periods 限制报告期，水位不作请求过滤。0 成功，1 失败，2 非法配置。")

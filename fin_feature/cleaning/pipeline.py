@@ -122,12 +122,17 @@ def clean_table(
     return stats
 
 
-def run_cleaning(repo: Repository, config: dict | None = None) -> list[CleanStats]:
+def run_cleaning(repo: Repository, config: dict | None = None, *, input_mode: str = "legacy") -> list[CleanStats]:
     """执行全部三张表的清洗。
 
     从原始表读取数据，清洗后写入清洗表。
     config: 清洗配置（cleaning 段），用于覆盖默认规则
     """
+    if input_mode == "versions":
+        from fin_feature.cleaning.versioned import run_versioned_cleaning
+        return run_versioned_cleaning(repo, config)
+    if input_mode != "legacy":
+        raise ValueError("unknown cleaning input mode")
     from fin_feature.cleaning.rules import load_rules_config
     from fin_feature.constants import RAW_TABLES
 

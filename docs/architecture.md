@@ -1,6 +1,6 @@
 # 架构设计：从 0 到 1 怎么做的
 
-本文记录初始架构与历史建设过程。当前状态见 [开发记录](progress.md)，后续目标见 [建设计划](implementation-plan.md)，新设计的选择依据见 [设计决策](decisions.md)。版本模型、原体留存与采集事务已实现；双源核验、特征消费版本切换、离线重放和历史查询尚待后续阶段。当前 2B-3 状态与边界见 progress。
+本文记录初始架构与历史建设过程。当前状态见 [开发记录](progress.md)，后续目标见 [建设计划](implementation-plan.md)，新设计的选择依据见 [设计决策](decisions.md)。版本模型、原体留存与采集事务已合入；2C 的特征消费版本切换已在独立分支实现待 MR；双源、离线重放和历史查询待后续阶段。当前状态与边界见 progress。
 
 > 本文档记录项目从需求到落地的完整设计过程：技术调研、关键决策、模块划分、数据模型、可扩展性设计。供后续维护者理解「为什么这样设计」。
 
@@ -261,3 +261,9 @@ class MyFeature(Feature):
 `CLI → validate_ingestion_settings → IngestionWorkflow → FinancialIngestionCoordinator`；crawl 在财务计划前增加 `discover_stocks → EvidenceRequestExecutor`，与财务请求共享限速器/Session，每次响应进入 RawStore 与 attempt/snapshot 审计。发现全部通过后才提交 stock_list，财务单元依次原子提交兼容 raw、版本、观察、当前投影及水位。run 以已提交单元结算；失败证据独立留存。`audit-raw` 只读检查并输出 TXT/JSON，不触发清洗或补抓。
 
 新模块为 `ingestion/settings.py`、`stock_discovery.py`、`workflow.py`；共用信封解析和现有 2B-2 分页/HTTP 层。配置与退出码见 [操作指南](stage-2/2b-operations.md)。2C 尚未实施，clean/features 输入保持兼容表。
+
+## 2026-10-17：2C 版本消费与计算血缘
+
+`statement_version 当前选择 → clean_statement（标准值/规则/诊断的不可变结果）→ clean_selection（包括 dropped 的当前指针）→ VersionedCleanRepository → 原特征上下文/公式 → feature_compute_log + features 当前投影`。三张 clean 表保留原计量兼容列，并用 record_ref/clean_ref 关联上述结果；新适配器读取标准值，不再次调用百分数转换。
+
+一次 clean 重建当前投影与选择，变化公司所有 stage1-v1 特征投影失效，历史结果保留；一次 features 在同一事务视图完成输入检查、计算、追加日志与当前投影。代价是本地计算期间持有事务，先保证快照一致性；将来大规模批处理需另设计冻结输入与分批提交，不能把本批方案当并发全市场承诺。无 HTTP 或回放接入。数据与命令见 [2C 操作指南](stage-2/2c-operations.md)。
