@@ -10,11 +10,11 @@
 - **存储**：SQLite（轻量、零配置、支持 SQL 按维度查询）
 - **语言**：Python 3.10+
 
-## 当前状态（2026-10-14）
+## 当前状态（2026-10-17）
 
-个人私有 GitLab 仓库和建设计划已建立，用户已授权阶段 1 开发，执行契约见 [阶段 1 入口](docs/stage-1/README.md)。阶段 1 尚未完成实现或验收。当天初次审阅的 44 个测试通过，但当前运行数据和报告目录为空，尚未复现真实数据端到端结果。
+阶段 1、2A、2B-1/2B-2 已合入；本批从 MR!7 合入后的 main `cbbc074` 开发 2B-3，代码提交 `16e2fe4`（分支 `feat/stage2b-3`），完成实现与自验证，待 MR 审阅。全量离线 552 passed、11 deselected，新增 CLI 用例 74 项；未调用真实财务接口、未升级真实业务库。2C/2D 尚未开始。
 
-已确认的限制包括增量日期过滤混用、三表合并空值覆盖、部分 YAML 配置未接入流程，以及尚未实现的历史时点查询。详见 [当前进展](docs/progress.md)。以下命令描述现有 CLI；测试通过不代表上述限制已经修复。
+采集已接入原始响应文件、逐次 HTTP 尝试、版本与观察血缘、单元事务和只读对账。第二来源、特征输入切换、离线重放和历史时点查询仍属后续工作，详见 [当前进展](docs/progress.md)。采集配置与退出码见 [2B 操作指南](docs/stage-2/2b-operations.md)。
 
 ## 文档索引
 
@@ -42,6 +42,8 @@
 
 ### 2. 端到端运行
 
+以下采集命令会访问公开接口并写入配置数据库，首次使用先检查 [操作指南](docs/stage-2/2b-operations.md) 的范围、备份和退出码。自定义配置写在子命令前：`python -m fin_feature.cli --config /path/config.yaml crawl`。本批仅做临时库与脚本化 HTTP 验证。
+
 ```bash
 # 1. 爬取数据（默认 50 家公司，可在 config.yaml 调整 stock_count）
 .venv/bin/python -m fin_feature.cli crawl
@@ -55,7 +57,7 @@
 # 4. 生成质量报告
 .venv/bin/python -m fin_feature.cli quality
 
-# 5. 增量爬取（仅获取上次之后的新数据）
+# 5. 对本地 stock_list 全部公司按 recent_periods 回扫（不按水位过滤）
 .venv/bin/python -m fin_feature.cli incremental
 
 # 6. 特征回测（按特征值分5组，计算各组下期收益代理）
@@ -78,7 +80,8 @@ sqlite3 data/finance.db "SELECT * FROM clean_log LIMIT 10;"
 ### 4. 运行测试
 
 ```bash
-.venv/bin/python -m pytest tests/ -v   # 44 个用例全部通过
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider -m 'not requires_network'
+# 本批：552 passed，11 个联网用例未执行
 ```
 
 ## 目录结构
@@ -92,15 +95,16 @@ fin_feature_framework/
 ├── config.yaml                     # 主配置
 ├── pyproject.toml                  # 项目元数据与依赖
 ├── fin_feature/                    # 主包
-│   ├── cli.py                      # CLI 入口（6 个子命令）
+│   ├── cli.py                      # CLI 入口（7 个子命令）
 │   ├── config.py / constants.py
 │   ├── crawler/                    # 爬虫（反爬：频率控制+UA伪装+重试）
-│   ├── storage/                    # SQLite 存储层
+│   ├── ingestion/                  # 留证请求、分页、发现与财务协调器
+│   ├── storage/                    # SQLite、证据文件与只读对账
 │   ├── cleaning/                   # 清洗流水线
 │   ├── features/                   # 特征引擎（装饰器注册，可扩展）
 │   ├── addons/                     # 附加项（质量/增量/回测）
 │   └── utils/                      # 日志/日期工具
-├── tests/                          # pytest 测试（44 个用例）
+├── tests/                          # pytest（默认离线验证，联网用例显式选择）
 ├── data/  reports/  logs/          # 运行时生成
 └── README.md                       # 本文件（文档索引）
 ```
@@ -111,8 +115,8 @@ fin_feature_framework/
 - **反爬策略**：令牌桶频率控制 + UA 伪装 + 指数退避重试
 - **规范清洗**：去重（保留最新披露版本）→ 异常值检测 → 缺失值处理 → 时间对齐，全程记日志
 - **可扩展特征**：`@FeatureRegistry.register` 装饰器，新特征零侵入接入
-- **三个附加项**：数据质量监控、增量处理（水位机制）、特征回测（分组回测）
-- **测试**：现有 44 个 pytest 用例通过；HTTP 失败、分页与真实数据验收仍需补充
+- **附加项**：数据质量监控、按报告期回扫（水位仅作记录）、盈利增长分组分析、原始证据只读对账
+- **证据与失败行为**：逐次保留原始响应；采集单元失败回滚业务写入，失败证据保留供只读对账；真实来源验收另行记录
 
 ## 配置
 
@@ -122,7 +126,12 @@ fin_feature_framework/
 |--------|------|--------|
 | database.path | SQLite 路径 | data/finance.db |
 | crawler.min_interval | 请求间隔（秒） | 1.5 |
+| crawler.max_retries | 每页最多尝试数，含首次 | 3 |
+| crawl.recent_periods | 最近不同报告期及其中全部修订；null 为全部历史 | 4 |
+| crawl.max_pages_per_unit | 分页安全上限，截断即失败 | 1000 |
+| raw_store.root | 相对数据库目录的证据根；null 使用同目录 raw/ | null |
+| raw_store.max_body_bytes | 单响应原字节/解压上限 | 33554432 |
 | crawl.stock_count | 爬取公司数 | 50 |
 | backtest.n_groups | 回测分组数 | 5 |
 
-更多细节见 [docs/development.md](docs/development.md) 的「维护指南」。
+采集上限、证据路径、退出码和对账命令见 [2B 操作指南](docs/stage-2/2b-operations.md)，开发说明见 [docs/development.md](docs/development.md)。

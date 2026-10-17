@@ -1,6 +1,6 @@
 # 架构设计：从 0 到 1 怎么做的
 
-本文记录初始架构与历史建设过程。当前状态见 [开发记录](progress.md)，后续目标见 [建设计划](implementation-plan.md)，新设计的选择依据见 [设计决策](decisions.md)。计划中的双源核验、版本模型和历史查询尚未实现。
+本文记录初始架构与历史建设过程。当前状态见 [开发记录](progress.md)，后续目标见 [建设计划](implementation-plan.md)，新设计的选择依据见 [设计决策](decisions.md)。版本模型、原体留存与采集事务已实现；双源核验、特征消费版本切换、离线重放和历史查询尚待后续阶段。当前 2B-3 状态与边界见 progress。
 
 > 本文档记录项目从需求到落地的完整设计过程：技术调研、关键决策、模块划分、数据模型、可扩展性设计。供后续维护者理解「为什么这样设计」。
 
@@ -255,3 +255,9 @@ class MyFeature(Feature):
 - 特征：12 特征 × 301 组合 = 3612 条，值覆盖率 77.2% ✓
 - 回测：分组逻辑、多空收益计算正确 ✓
 - 测试：44 个 pytest 全部通过 ✓
+
+## 2026-10-17：2B-3 采集入口数据流
+
+`CLI → validate_ingestion_settings → IngestionWorkflow → FinancialIngestionCoordinator`；crawl 在财务计划前增加 `discover_stocks → EvidenceRequestExecutor`，与财务请求共享限速器/Session，每次响应进入 RawStore 与 attempt/snapshot 审计。发现全部通过后才提交 stock_list，财务单元依次原子提交兼容 raw、版本、观察、当前投影及水位。run 以已提交单元结算；失败证据独立留存。`audit-raw` 只读检查并输出 TXT/JSON，不触发清洗或补抓。
+
+新模块为 `ingestion/settings.py`、`stock_discovery.py`、`workflow.py`；共用信封解析和现有 2B-2 分页/HTTP 层。配置与退出码见 [操作指南](stage-2/2b-operations.md)。2C 尚未实施，clean/features 输入保持兼容表。
