@@ -402,3 +402,160 @@ class TestB12IncompleteV4Rejected:
             "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"))
         assert before == after
         conn.close()
+
+
+# ===========================================================================
+# 复审修复 R1/R5/R6（2026-10-17，响应独立审阅 b8b2b3f）
+# ===========================================================================
+
+class TestR1InitSchemaBackup:
+    """R1：常规 init_schema 对含历史数据的 v3 库必须先备份再升级。"""
+
+    def test_populated_v3_upgraded_with_backup(self, tmp_path):
+        from fin_feature.storage.database import get_connection, init_schema
+
+        db_path = tmp_path / "legacy.db"
+        conn = make_v3_db(db_path)
+        assert m._get_current_version(conn) == 3
+        conn.close()
+
+        init_schema(str(db_path))
+
+        conn = get_connection(str(db_path))
+        assert m._get_current_version(conn) == 4
+        backups = [p.name for p in tmp_path.iterdir() if "backup" in p.name]
+        assert len(backups) == 1, "含历史数据的库升级前必须生成唯一备份"
+        # 备份是升级前的 v3 快照
+        copy = get_connection(str(tmp_path / backups[0]))
+        assert m._get_current_version(copy) == 3
+        copy.close()
+        conn.close()
+
+    def test_backup_failure_blocks_migration(self, tmp_path, monkeypatch):
+        """备份失败时，原 v3 库不变，不执行任何升级 DDL。"""
+        from fin_feature.storage.database import get_connection, init_schema
+
+        db_path = tmp_path / "legacy.db"
+        conn = make_v3_db(db_path)
+        conn.close()
+
+        def fail_backup(conn, target_path):
+            raise RuntimeError("注入：备份失败")
+
+        monkeypatch.setattr(m, "backup_database_for_migration", fail_backup)
+
+        with pytest.raises(RuntimeError, match="备份失败"):
+            init_schema(str(db_path))
+
+        # 重连核对：原库仍为 v3，无 v4 结构
+        conn = get_connection(str(db_path))
+        assert m._get_current_version(conn) == 3
+        assert not m._table_exists(conn, "ingest_unit")
+        conn.close()
+
+    def test_fresh_db_no_backup(self, tmp_path):
+        """空库直接迁移，不制造备份。"""
+        from fin_feature.storage.database import get_connection, init_schema
+
+        db_path = tmp_path / "fresh.db"
+        init_schema(str(db_path))
+
+        conn = get_connection(str(db_path))
+        assert m._get_current_version(conn) == 4
+        backups = [p.name for p in tmp_path.iterdir() if "backup" in p.name]
+        assert backups == []
+        conn.close()
+
+    def test_already_v4_no_backup(self, tmp_path):
+        """已是完整 v4 的日常初始化不反复制造备份。"""
+        from fin_feature.storage.database import get_connection, init_schema
+
+        db_path = tmp_path / "v4.db"
+        init_schema(str(db_path))  # 首次建库
+        init_schema(str(db_path))  # 再次初始化
+
+        backups = [p.name for p in tmp_path.iterdir() if "backup" in p.name]
+        assert backups == []
+
+
+class TestR5BackupExclusive:
+    """R5：备份目标独占创建，并发竞争不覆盖他人备份。"""
+
+    def test_concurrent_target_creation_rejected(self, tmp_path, monkeypatch):
+        """os.link 前目标被并发创建 → 拒绝，既有目标逐字节不变。"""
+        import os
+
+        conn = make_v3_db(tmp_path / "source.db")
+        target = tmp_path / "backup.db"
+
+        real_link = os.link
+
+        def race_link(src, dst):
+            # 模拟：os.link 前并发进程创建了目标
+            other = sqlite3.connect(str(dst))
+            other.execute("CREATE TABLE preserved_backup (value TEXT)")
+            other.execute("INSERT INTO preserved_backup VALUES ('keep')")
+            other.commit()
+            other.close()
+            return real_link(src, dst)
+
+        monkeypatch.setattr("os.link", race_link)
+        with pytest.raises(RuntimeError, match="已被并发创建"):
+            backup_database_for_migration(conn, target)
+
+        # 并发创建的目标逐字节不变
+        dest = sqlite3.connect(str(target))
+        tables = [r[0] for r in dest.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")]
+        assert "preserved_backup" in tables
+        dest.close()
+        conn.close()
+
+    def test_failure_cleans_only_own_temp(self, tmp_path, monkeypatch):
+        """备份失败只清理自己的临时文件，不删既有目标。"""
+        conn = make_v3_db(tmp_path / "source.db")
+        target = tmp_path / "backup.db"
+        target.write_bytes(b"existing, do not touch")
+
+        with pytest.raises(RuntimeError, match="拒绝覆盖"):
+            backup_database_for_migration(conn, target)
+
+        assert target.read_bytes() == b"existing, do not touch"
+        # 没有残留临时文件
+        temps = [p for p in tmp_path.iterdir() if p.name.startswith(".")]
+        assert temps == []
+        conn.close()
+
+
+class TestR6StructureGapColumns:
+    """R6：v4 结构核验覆盖新表必需列，不只看表名。"""
+
+    @pytest.mark.parametrize("damage", ["unit_column", "attempt_column"])
+    def test_missing_new_table_column_rejected(self, tmp_path, damage):
+        conn = get_connection(str(tmp_path / "v4.db"))
+        run_migrations(conn)
+        assert collect_v4_structure_gaps(conn) == []
+
+        if damage == "unit_column":
+            conn.execute("ALTER TABLE ingest_unit DROP COLUMN compat_writes")
+        else:
+            conn.execute("ALTER TABLE ingest_attempt DROP COLUMN error_code")
+        conn.commit()
+
+        gaps = collect_v4_structure_gaps(conn)
+        assert gaps, damage
+        with pytest.raises(RuntimeError, match="结构不完整"):
+            verify_v4_structure(conn)
+        conn.close()
+
+    def test_missing_attempt_detail_rejected(self, tmp_path):
+        conn = get_connection(str(tmp_path / "v4.db"))
+        run_migrations(conn)
+        conn.execute("ALTER TABLE ingest_attempt DROP COLUMN detail")
+        conn.commit()
+
+        gaps = collect_v4_structure_gaps(conn)
+        assert any("ingest_attempt.detail" in g for g in gaps)
+        with pytest.raises(RuntimeError, match="结构不完整"):
+            run_migrations(conn)
+        conn.close()

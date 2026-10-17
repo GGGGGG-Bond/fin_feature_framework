@@ -3,6 +3,7 @@
 对应 docs/stage-2/2b-test-matrix.md「2B-1：证据、模型与失败边界」。
 """
 
+import gzip
 import json
 
 import pytest
@@ -536,3 +537,148 @@ class TestB15ReplayAndConflict:
         assert env.repo.get_snapshot(captured.snapshot_id)["validation_status"] == "invalid"
         with pytest.raises(ValueError, match="仅 pending"):
             env.repo.set_snapshot_validation(captured.snapshot_id, "valid", 0)
+
+
+# ===========================================================================
+# 复审修复 R4/R7（2026-10-17，响应独立审阅 b8b2b3f）
+# ===========================================================================
+
+class TestR4LocatorGroupAndDiagnostics:
+    """R4：同 row locator 的幂等预检必须比较版本分组与诊断。"""
+
+    def test_different_report_period_conflicts(self, evidence_env):
+        """同 (snapshot, row_index) 改传另一报告期 → 冲突，不静默返回原期间版本。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(unit, rows=[{"TOTAL_OPERATE_INCOME": 100}])
+
+        first = env.create_version(unit, captured, row_index=0,
+                                  report_date="2024-03-31")
+        with pytest.raises(CaptureConflict, match="版本分组"):
+            env.create_version(unit, captured, row_index=0,
+                               report_date="2024-06-30")
+
+        # 版本/观察/当前指针全表快照不变
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 1
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_observation").fetchone()[0] == 1
+        row = env.conn.execute(
+            "SELECT report_date FROM statement_version WHERE version_id = ?", (first,)
+        ).fetchone()
+        assert row["report_date"] == "2024-03-31"
+
+    def test_different_diagnostics_conflicts(self, evidence_env):
+        """同身份、同期间但诊断不同 → 冲突，旧诊断不被静默改写。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(unit, rows=[{"TOTAL_OPERATE_INCOME": 100}])
+
+        env.create_version(unit, captured, row_index=0,
+                           report_date="2024-03-31",
+                           normalization_diagnostics='["first"]')
+        with pytest.raises(CaptureConflict, match="诊断"):
+            env.create_version(unit, captured, row_index=0,
+                               report_date="2024-03-31",
+                               normalization_diagnostics='["different"]')
+
+        obs = env.conn.execute(
+            "SELECT normalization_diagnostics FROM statement_observation "
+            "WHERE snapshot_id = ? AND row_index = 0",
+            (captured.snapshot_id,),
+        ).fetchone()
+        assert obs["normalization_diagnostics"] == '["first"]'
+
+    def test_same_everything_is_idempotent(self, evidence_env):
+        """同身份、同分组、同内容、同诊断 → 幂等返回原版本。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(unit, rows=[{"TOTAL_OPERATE_INCOME": 100}])
+
+        first = env.create_version(unit, captured, row_index=0,
+                                   report_date="2024-03-31",
+                                   normalization_diagnostics='["first"]')
+        replay = env.create_version(unit, captured, row_index=0,
+                                    report_date="2024-03-31",
+                                    normalization_diagnostics='["first"]')
+        assert replay == first
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 1
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_observation").fetchone()[0] == 1
+
+
+class TestR7AllFinalPagesVerified:
+    """R7：完整单元证明中的全部最终页文件必须当前可核验。"""
+
+    def test_other_final_page_missing_rejected(self, evidence_env):
+        """声明 pages=2 的证明，第二页文件已删除 → 不能新增 evidence_sufficient=1。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows_a = [{"TOTAL_OPERATE_INCOME": 100}]
+        rows_b = [{"TOTAL_OPERATE_INCOME": 200}]
+
+        def body(rows):
+            return json.dumps(
+                {"success": True, "result": {"pages": 2, "count": 2, "data": rows}}
+            ).encode()
+
+        cap_a = env.capture(unit, page=1, rows=rows_a, body=body(rows_a))
+        cap_b = env.capture(unit, page=2, rows=rows_b, body=body(rows_b))
+        (env.store.root / cap_b.file_path).unlink()
+
+        evidence = env.evidence(unit["unit_id"], [cap_a, cap_b])
+        with pytest.raises(RawStoreVerifyError, match="缺失"):
+            env.create_version(unit, cap_a, row_index=0, evidence=evidence)
+
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_observation").fetchone()[0] == 0
+
+    def test_other_final_page_tampered_rejected(self, evidence_env):
+        """第二页文件被篡改 → 不能新增充分证据版本。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows_a = [{"TOTAL_OPERATE_INCOME": 100}]
+        rows_b = [{"TOTAL_OPERATE_INCOME": 200}]
+
+        def body(rows):
+            return json.dumps(
+                {"success": True, "result": {"pages": 2, "count": 2, "data": rows}}
+            ).encode()
+
+        cap_a = env.capture(unit, page=1, rows=rows_a, body=body(rows_a))
+        cap_b = env.capture(unit, page=2, rows=rows_b, body=body(rows_b))
+        target_b = env.store.root / cap_b.file_path
+        target_b.write_bytes(gzip.compress(b'{"tampered":1}', mtime=0))
+
+        evidence = env.evidence(unit["unit_id"], [cap_a, cap_b])
+        with pytest.raises(RawStoreVerifyError):
+            env.create_version(unit, cap_a, row_index=0, evidence=evidence)
+
+    def test_all_pages_present_accepted(self, evidence_env):
+        """两页文件都在且可核验 → 可新增充分证据版本。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows_a = [{"TOTAL_OPERATE_INCOME": 100}]
+        rows_b = [{"TOTAL_OPERATE_INCOME": 200}]
+
+        def body(rows):
+            return json.dumps(
+                {"success": True, "result": {"pages": 2, "count": 2, "data": rows}}
+            ).encode()
+
+        cap_a = env.capture(unit, page=1, rows=rows_a, body=body(rows_a))
+        cap_b = env.capture(unit, page=2, rows=rows_b, body=body(rows_b))
+        evidence = env.evidence(unit["unit_id"], [cap_a, cap_b])
+
+        version_id = env.create_version(unit, cap_a, row_index=0, evidence=evidence)
+        flag = env.conn.execute(
+            "SELECT evidence_sufficient FROM statement_version WHERE version_id = ?",
+            (version_id,),
+        ).fetchone()[0]
+        assert flag == 1

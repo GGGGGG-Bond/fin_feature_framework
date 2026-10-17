@@ -6,6 +6,8 @@
 """
 
 import gzip
+import json
+import sqlite3
 from argparse import Namespace
 from pathlib import Path
 
@@ -140,7 +142,11 @@ class TestB42CleanAndFindings:
         assert env.repo.get_unit(unit["unit_id"])["status"] == "running"
 
     def test_transport_error_without_snapshot_allowed(self, evidence_env):
-        """网络无响应：只有 attempt、无 snapshot，不是异常（第 3 类保留对象）。"""
+        """网络无响应：只有 attempt、无 snapshot，不是 attempt_without_snapshot 异常。
+
+        但带 transport_error 最终页的单元不应标成功——这是失败单元，对账应报告
+        其证据缺口（R8：成功单元的全部最终页必须已核验）。
+        """
         env = evidence_env
         env.new_run()
         unit = env.new_unit()
@@ -148,12 +154,28 @@ class TestB42CleanAndFindings:
         attempt = env.repo.register_attempt(unit["unit_id"], 1, 1)
         env.repo.finish_attempt(attempt, "transport_error", error_code="timeout")
         env.capture(unit, page=2, rows=[{"TOTAL_OPERATE_INCOME": 100}])
-        env.repo.finish_unit(unit["unit_id"], "success")
+        env.repo.finish_unit(unit["unit_id"], "failed", failure_code="transport_error")
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        # transport_error 允许无 snapshot（第 3 类保留对象），不报 attempt_without_snapshot
+        assert "attempt_without_snapshot" not in audit_codes(report)
+        # 失败单元不要求证据完整；对账干净
+        assert report.clean is True
+
+    def test_transport_error_attempt_not_flagged_without_snapshot(self, evidence_env):
+        """独立检查：transport_error 的 attempt 本身不报 attempt_without_snapshot。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        attempt = env.repo.register_attempt(unit["unit_id"], 1, 1)
+        env.repo.finish_attempt(attempt, "transport_error", error_code="timeout")
+        env.repo.finish_unit(unit["unit_id"], "failed", failure_code="transport_error")
         env.repo.finalize_run(unit["run_id"])
 
         report = audit_raw(env.conn, env.store)
         assert "attempt_without_snapshot" not in audit_codes(report)
-        assert report.clean is True
 
     def test_success_unit_without_evidence_reported(self, evidence_env):
         env = evidence_env
@@ -300,3 +322,250 @@ class TestAuditRawCLI:
             run_id="run-x", all_runs=False, report_dir=str(tmp_path / "audit"),
         )
         assert cmd_audit_raw(args) == 1
+
+
+# ===========================================================================
+# 复审修复 R2/R3（2026-10-17，响应独立审阅 b8b2b3f）
+# ===========================================================================
+
+class TestR2AuditReadOnly:
+    """R2：audit-raw 不改 journal_mode、不创建数据库/证据根目录。"""
+
+    def test_journal_mode_unchanged_and_root_not_created(self, tmp_path):
+        from fin_feature.cli import cmd_audit_raw
+
+        # 用 delete 模式建库（非 WAL），证明 audit 不强制改 journal_mode
+        db_path = tmp_path / "existing.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        from fin_feature.storage.migrations import run_migrations
+        run_migrations(conn)
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.commit()
+        conn.close()
+
+        before = sqlite3.connect(str(db_path)).execute("PRAGMA journal_mode").fetchone()[0]
+        raw_root = tmp_path / "raw-not-created"
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "database:\n  path: " + str(db_path) + "\n"
+            "raw_store:\n  root: " + str(raw_root) + "\n"
+            "logging:\n  level: ERROR\n  file: " + str(tmp_path / "cli.log") + "\n",
+            encoding="utf-8",
+        )
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = cmd_audit_raw(Namespace(
+                config=str(cfg), run_id=None, all_runs=True,
+                report_dir=str(tmp_path / "reports"),
+            ))
+
+        after = sqlite3.connect(str(db_path)).execute("PRAGMA journal_mode").fetchone()[0]
+        assert before == "delete" and after == "delete"
+        assert not raw_root.exists(), "只读对账不得创建证据根目录"
+
+    def test_audit_with_existing_root_writes_report(self, tmp_path):
+        """证据根已存在时，audit 正常运行并写报告，但不改 journal_mode。"""
+        from fin_feature.cli import cmd_audit_raw
+
+        db_path = tmp_path / "existing.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        from fin_feature.storage.migrations import run_migrations
+        run_migrations(conn)
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.commit()
+        conn.close()
+
+        raw_root = tmp_path / "raw"
+        raw_root.mkdir()
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "database:\n  path: " + str(db_path) + "\n"
+            "raw_store:\n  root: " + str(raw_root) + "\n"
+            "logging:\n  level: ERROR\n  file: " + str(tmp_path / "cli.log") + "\n",
+            encoding="utf-8",
+        )
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = cmd_audit_raw(Namespace(
+                config=str(cfg), run_id=None, all_runs=True,
+                report_dir=str(tmp_path / "reports"),
+            ))
+        assert code == 0
+        after = sqlite3.connect(str(db_path)).execute("PRAGMA journal_mode").fetchone()[0]
+        assert after == "delete"
+        assert (tmp_path / "reports").exists()
+
+    def test_missing_database_returns_one(self, tmp_path):
+        from fin_feature.cli import cmd_audit_raw
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "database:\n  path: " + str(tmp_path / "nope.db") + "\n"
+            "raw_store:\n  root: " + str(tmp_path / "raw") + "\n"
+            "logging:\n  level: ERROR\n  file: " + str(tmp_path / "cli.log") + "\n",
+            encoding="utf-8",
+        )
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = cmd_audit_raw(Namespace(
+                config=str(cfg), run_id=None, all_runs=True,
+                report_dir=str(tmp_path / "reports"),
+            ))
+        assert code == 1
+        assert not (tmp_path / "nope.db").exists(), "只读连接不得创建空库"
+
+    def test_missing_raw_root_returns_one(self, tmp_path):
+        from fin_feature.cli import cmd_audit_raw
+
+        db_path = tmp_path / "existing.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        from fin_feature.storage.migrations import run_migrations
+        run_migrations(conn)
+        conn.commit()
+        conn.close()
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "database:\n  path: " + str(db_path) + "\n"
+            "raw_store:\n  root: " + str(tmp_path / "raw-missing") + "\n"
+            "logging:\n  level: ERROR\n  file: " + str(tmp_path / "cli.log") + "\n",
+            encoding="utf-8",
+        )
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = cmd_audit_raw(Namespace(
+                config=str(cfg), run_id=None, all_runs=True,
+                report_dir=str(tmp_path / "reports"),
+            ))
+        assert code == 1
+        assert not (tmp_path / "raw-missing").exists()
+
+
+class TestR3NoFalseOrphans:
+    """R3：按 run 过滤时不把其他健康批次的合法文件误报为孤儿。"""
+
+    def test_two_healthy_runs_filtered_clean(self, evidence_env):
+        env = evidence_env
+        state_a = make_healthy_run(env)
+        make_healthy_run(env)
+
+        all_report = audit_raw(env.conn, env.store)
+        one_report = audit_raw(env.conn, env.store, run_id=state_a["unit"]["run_id"])
+
+        assert all_report.clean is True
+        assert one_report.clean is True, "只查一个 run 不应把另一个 run 的文件报为孤儿"
+        assert "orphan_file" not in audit_codes(one_report)
+
+    def test_other_run_orphan_not_in_scope(self, evidence_env):
+        """另一批次的孤儿不串入当前 run 的对账范围。"""
+        env = evidence_env
+        state_a = make_healthy_run(env)
+        state_b = make_healthy_run(env)
+        # 在 b 的目录下放一个孤儿
+        orphan = (env.store.root / state_b["captured"].file_path).parent / "a000009.body.gz"
+        orphan.write_bytes(gzip.compress(b'{"orphan":1}', mtime=0))
+
+        scoped = audit_raw(env.conn, env.store, run_id=state_a["unit"]["run_id"])
+        assert scoped.clean is True, "b 的孤儿不串入 a 的范围"
+
+        everything = audit_raw(env.conn, env.store)
+        assert "orphan_file" in audit_codes(everything)
+        assert everything.exit_code() == 1
+
+
+class TestR8SuccessUnitAllFinalPagesValid:
+    """R8：成功单元的全部最终页必须已核验，不只看"至少一页 valid"。"""
+
+    def test_pending_final_page_reported(self, evidence_env):
+        """第一页 valid、第二页 pending → 成功单元对账不干净。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows_a = [{"TOTAL_OPERATE_INCOME": 100}]
+        rows_b = [{"TOTAL_OPERATE_INCOME": 200}]
+
+        def body(rows):
+            return json.dumps(
+                {"success": True, "result": {"pages": 2, "count": 2, "data": rows}}
+            ).encode()
+
+        env.capture(unit, page=1, rows=rows_a, body=body(rows_a))
+        env.capture(unit, page=2, rows=rows_b, body=body(rows_b), validation="pending")
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=2, selected_rows=2)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "unit_success_without_evidence" in audit_codes(report)
+        assert report.exit_code() == 1
+
+    def test_invalid_final_page_reported(self, evidence_env):
+        """第一页 valid、第二页 invalid → 成功单元对账不干净。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows_a = [{"TOTAL_OPERATE_INCOME": 100}]
+        rows_b = [{"TOTAL_OPERATE_INCOME": 200}]
+
+        def body(rows):
+            return json.dumps(
+                {"success": True, "result": {"pages": 2, "count": 2, "data": rows}}
+            ).encode()
+
+        env.capture(unit, page=1, rows=rows_a, body=body(rows_a))
+        env.capture(unit, page=2, rows=rows_b, body=body(rows_b), validation="invalid")
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=2, selected_rows=2)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert "unit_success_without_evidence" in audit_codes(report)
+
+    def test_all_final_pages_valid_clean(self, evidence_env):
+        """两页都 valid → 成功单元对账干净。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows_a = [{"TOTAL_OPERATE_INCOME": 100}]
+        rows_b = [{"TOTAL_OPERATE_INCOME": 200}]
+
+        def body(rows):
+            return json.dumps(
+                {"success": True, "result": {"pages": 2, "count": 2, "data": rows}}
+            ).encode()
+
+        env.capture(unit, page=1, rows=rows_a, body=body(rows_a))
+        env.capture(unit, page=2, rows=rows_b, body=body(rows_b))
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=2, selected_rows=2)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert report.clean is True
+
+    def test_failed_retry_page_does_not_block(self, evidence_env):
+        """历史失败重试页（非最终页）可保留，不要求其也 valid。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows_a = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        def body(rows):
+            return json.dumps(
+                {"success": True, "result": {"pages": 1, "count": 1, "data": rows}}
+            ).encode()
+
+        # 页 1 第一次失败（http_error），第二次成功
+        failed_attempt = env.repo.register_attempt(unit["unit_id"], 1, 1)
+        env.repo.finish_attempt(failed_attempt, "http_error", error_code="500")
+        env.capture(unit, page=1, http_attempt=2, rows=rows_a, body=body(rows_a))
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert report.clean is True
