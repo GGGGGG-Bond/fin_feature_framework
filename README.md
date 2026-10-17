@@ -12,9 +12,9 @@
 
 ## 当前状态（2026-10-17）
 
-阶段 1、2A、2B-1/2B-2 已合入；本批从 MR!7 合入后的 main `cbbc074` 开发 2B-3，代码提交 `16e2fe4`（分支 `feat/stage2b-3`），完成实现与自验证，待 MR 审阅。全量离线 552 passed、11 deselected，新增 CLI 用例 74 项；未调用真实财务接口、未升级真实业务库。2C/2D 尚未开始。
+阶段 1、2A、2B 已合入；MR!8 合入 main `194610b`，与送审头 `d41673d` 文件树一致。本批从该 main 实施 2C，代码 `3b3c5d8` + 季度报告期门禁 `9f9a26d`（分支 `feat/stage2c`），完成实现与自验证，待 MR 审阅。全量离线 597 passed、11 deselected，新增 45 项；未调用真实接口、未升级真实业务库。2D 尚未开始。
 
-采集已接入原始响应文件、逐次 HTTP 尝试、版本与观察血缘、单元事务和只读对账。第二来源、特征输入切换、离线重放和历史时点查询仍属后续工作，详见 [当前进展](docs/progress.md)。采集配置与退出码见 [2B 操作指南](docs/stage-2/2b-operations.md)。
+采集已接入原始响应文件、逐次 HTTP 尝试、版本与观察血缘、单元事务和只读对账。特征输入已接入版本清洗结果；第二来源、离线重放和历史时点查询仍属后续工作，详见 [当前进展](docs/progress.md)。采集配置与退出码见 [2B 操作指南](docs/stage-2/2b-operations.md)，清洗、血缘与 v5 升级说明见 [2C 操作指南](docs/stage-2/2c-operations.md)。
 
 ## 文档索引
 
@@ -81,7 +81,7 @@ sqlite3 data/finance.db "SELECT * FROM clean_log LIMIT 10;"
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider -m 'not requires_network'
-# 本批：552 passed，11 个联网用例未执行
+# 本批：597 passed，11 个联网用例未执行
 ```
 
 ## 目录结构

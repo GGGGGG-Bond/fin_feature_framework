@@ -116,3 +116,11 @@ def _apply_migration(conn, version, name, fn):
 - sv_counts_by_type：各 table_type 记录数
 
 测试断言：迁移数据全部 evidence_sufficient=0、旧表记录数不变、哈希可从存储字段重算、当前投影与阶段一选值一致且每组唯一、全部历史记录保留、重跑幂等。
+
+## v5：2C 清洗血缘（2026-10-17，待 MR）
+
+注册 `v5_clean_lineage`，实现位于 storage/clean_model.py；旧 v1—v4 迁移函数保持不变。新增 clean_statement/clean_selection 与三张 clean 表的可空外键。已被接受但没有兼容清洗表的旧 v2/v3 草稿，由 v5 幂等补建缺失 clean 表；存在但缺列/约束的伪完整结构拒绝，不删旧数据。
+
+常规 Database.init/init_schema 发现待执行迁移，仍先使用 SQLite backup API 保存旧库（包括 WAL 提交），再迁移。低层 run_migrations 只管理迁移事务，调用方须选择已验收备份入口；本批只在临时库验证，未执行真实升级。迁移不运行 clean/features、不回填 record_ref、不把旧结果标证据充分。升级后首轮 clean 显式重建当前投影；先确认使用的库与配置。
+
+C01/C02 验证含数据 v4 副本、v5 幂等、不完整及伪约束结构拒绝、DDL 后异常回滚与外层事务所有权。已有迁移测试的“最新版本”断言改从注册表推导，原 v3 备份版本和内容断言仍保留。

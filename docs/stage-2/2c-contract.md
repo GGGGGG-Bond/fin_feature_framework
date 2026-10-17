@@ -47,3 +47,26 @@ features 仅为当前投影，与不可变计算日志在同一事务提交。�
 | C15 | 从特征版本引用到真实 snapshot + row_index + gzip 原体逐项核验；不足证据不升级 |
 
 不实现 2D replay、第二来源、as_of、真实业务采集或生产部署。验收仅临时 SQLite/gzip 与脚本化 HTTP；精确测试名与结果交付时补充。
+
+## 2026-10-17：实现与验证映射
+
+实现 `3b3c5d8` + `9f9a26d`，待固定 head MR 审阅。新增 tests/test_versioned_pipeline.py **45 项**（含参数化），旧 552 项保持；全量 **597 passed、11 deselected（14.33s）**。命令与临时输入边界见 [批次记录](../progress.md)。以下后缀均对应该测试文件中的 test_ 函数。
+
+| ID | 用例后缀/实际验证 |
+|---|---|
+| C01 | c01_v4_upgrade_backup_preserves_rows_without_inventing_refs / c01_v5_incomplete_structure_is_rejected / c01_v5_constraint_impostor_is_rejected |
+| C02 | c02_v5_failure_rollback_preserves_outer_transaction：DDL 后真实故障，外层 stock 行仍待提交 |
+| C03 | c03_versions_are_authoritative_and_no_raw_fallback |
+| C04/C05 | c04_c05_standard_values_convert_once_and_carry_refs：原值 16.75、标准值 0.1675、毛利率 0.4、负债率 0.6、FieldSource.record_ref；fixture 单位污染不影响 |
+| C06 | c06_idempotent_cleaning_and_config_change / c06_zero_cannot_manufacture_unknown_unit（原字段有值及缺失两种） |
+| C07 | c07_drop_invalidates_comparison_period_projections_but_preserves_logs：比较期变更、连续 dropped 修订、其他公司不受影响 |
+| C08 | c08_clean_failure_is_atomic_after_reconnect / c08_c13_outer_transaction_is_not_committed_by_version_work |
+| C09 | c09_qoq_lineage_includes_only_required_differencing_periods / c09_yoy_and_current_lineage_exclude_unrelated_periods / c09_c10_explicit_comparable_fixture_retains_numeric_formulas |
+| C10 | c10_unknown_basis_remains_blocking_and_none_has_reason / c10_nonpositive_and_industry_diagnostics / c10_calculation_failures_have_explicit_reason；正向可比 fixture 的 ROE 变化 10、变化率 1、营收 YoY/QoQ 0.2；负利润比较基数拒算 |
+| C11 | c11_repeated_computation_appends_logs_and_updates_projection |
+| C12 | c12_stale_or_corrupt_inputs_fail_before_any_output / c12_report_period_must_be_normalized_quarter_end |
+| C13 | c13_compute_failures_are_atomic_after_reconnect / c13_legacy_projection_does_not_block_immutable_new_log / c13_other_definition_with_same_key_is_preserved |
+| C14 | c14_invalid_cleaning_config_is_rejected_without_writes / c14_invalid_cli_rules_are_rejected_before_db_initialization；全部旧离线回归保留，最新版本断言跟随迁移注册表 |
+| C15 | c15_cli_feature_trace_reaches_real_http_body / c15_legacy_input_stays_unverified_after_compute |
+
+实际 commit 故障发生于连接 commit 方法，不由测试预先回滚；清洗、计算和外层事务均重连核对结果。正向可比仅为显式受控声明，未将 unknown 生产输入放行。全部运行限临时库、真实临时 gzip 与脚本化 HTTP，未联网或升级业务库。
