@@ -144,6 +144,44 @@ class Repository:
         self.conn.executemany(sql, filtered)
         return len(rows)
 
+    def upsert_compat_raw(self, table_suffix: str, records: Iterable[dict]) -> int:
+        """兼容 raw 写入：保留原计量，供阶段一 clean/features 继续消费。
+
+        - notice_date 非空：INSERT OR REPLACE，与阶段一同主键语义一致；调用方按
+          阶段一选值顺序（dedup.sort_key 升序）传入，最终当前行即最新公告。
+        - notice_date 为空：SQLite 复合主键允许 NULL 重复，须按
+          (secucode, report_date, 公告为空) 比较同一映射内容（排除 crawled_at），
+          相同内容复用既有行，不同内容保留为新行；不因幂等删除既有历史。
+        返回实际写入行数（空公告同内容复用不计）。
+        """
+        rows = list(records)
+        if not rows:
+            return 0
+        table = RAW_TABLES[table_suffix]
+        table_cols = self._get_table_columns(table)
+        written = 0
+        for record in rows:
+            cols = [c for c in record.keys() if c in table_cols and c != "crawled_at"]
+            if not cols:
+                continue
+            incoming = {c: record.get(c) for c in cols}
+            if incoming.get("notice_date") is None:
+                existing = self.conn.execute(
+                    f"SELECT * FROM {table} "
+                    "WHERE secucode = ? AND report_date = ? AND notice_date IS NULL",
+                    (incoming.get("secucode"), incoming.get("report_date")),
+                ).fetchall()
+                if any({c: row[c] for c in cols} == incoming for row in existing):
+                    continue
+            placeholders = ", ".join(f":{c}" for c in cols)
+            col_list = ", ".join(cols)
+            self.conn.execute(
+                f"INSERT OR REPLACE INTO {table} ({col_list}) VALUES ({placeholders})",
+                incoming,
+            )
+            written += 1
+        return written
+
     # ------------------------------------------------------------------
     # 原始数据查询
     # ------------------------------------------------------------------
@@ -446,18 +484,23 @@ class Repository:
         source_name: str,
         request_scope: str | None = None,
         crawler_version: str | None = None,
+        started_at: str | None = None,
     ) -> str:
         """创建采集批次，返回 run_id（UUID）。
 
         P1 #3 修复：不自行提交，事务由外层调用方控制（采集单元原子性）。
+        2B-2：协调器传入实际 UTC 开始时间；未传时沿用历史默认值。
         """
         import uuid
         run_id = str(uuid.uuid4())
         sql = """
-            INSERT INTO ingest_run (run_id, source_name, request_scope, crawler_version, status)
-            VALUES (?, ?, ?, ?, 'running')
+            INSERT INTO ingest_run
+            (run_id, source_name, request_scope, crawler_version, status, started_at)
+            VALUES (?, ?, ?, ?, 'running', COALESCE(?, datetime('now', 'localtime')))
         """
-        self.conn.execute(sql, (run_id, source_name, request_scope, crawler_version))
+        self.conn.execute(
+            sql, (run_id, source_name, request_scope, crawler_version, started_at)
+        )
         return run_id
 
     def finish_ingest_run(
@@ -1063,7 +1106,9 @@ class Repository:
         row_index: int | None = None,
         entry_time: str | None = None,
         normalization_diagnostics: str | None = None,
+        observed_at: str | None = None,
         unit_evidence=None,
+        defer_projection: bool = False,
     ) -> str:
         """创建标准化版本记录，处理 observation_seq 自增和旧版本替代。
 
@@ -1078,6 +1123,10 @@ class Repository:
         - evidence_sufficient=1 只用于 http-body-v1、文件校验通过、valid 页、
           分页/行定位一致且单元完整性有据的输入；legacy-unverified 引用不能声明充分
         - 新观察持久化 snapshot_id + row_index，并在修改当前投影之前做身份幂等预检
+        - H1：observed_at 由调用方传入该响应真实接收时间（UTC）；首次与重复观察
+          都使用同一实际接收时间，不再落到数据库本地提交时间默认值
+        - defer_projection=True 时只写版本/观察，不在此处翻转当前投影；协调器在
+          同一业务事务内按阶段一选值规则统一重建（避免较旧公告后到反而覆盖新版）
 
         返回 version_id（UUID）。
         """
@@ -1191,7 +1240,8 @@ class Repository:
         if existing is not None:
             existing_id = existing[0]
             # R2：恢复当前状态（is_superseded=0），并将同组其余版本标记为已替代
-            if existing[1] == 1:
+            # 2B-2：defer_projection 时由协调器在同一业务事务内统一按选值规则重建
+            if existing[1] == 1 and not defer_projection:
                 self.conn.execute("""
                     UPDATE statement_version
                     SET is_superseded = 0, superseded_by = NULL
@@ -1206,6 +1256,7 @@ class Repository:
                 """, (existing_id, secucode, report_date, table_type, source_name, existing_id))
             # R3：同内容重复观察不制造新版本，但保存本次观察与 snapshot 的关联
             # A3：保存本次观察的公告/修订元信息
+            # H1：observed_at = 本次响应真实接收时间（UTC），不是提交时间
             self._record_observation(
                 existing_id, snapshot_id, run_id,
                 notice_date=notice_date,
@@ -1214,6 +1265,7 @@ class Repository:
                 row_index=row_index,
                 entry_time=entry_time,
                 normalization_diagnostics=normalization_diagnostics,
+                observed_at=observed_at,
             )
             return existing_id
 
@@ -1230,21 +1282,25 @@ class Repository:
         sql = """
             INSERT INTO statement_version
             (version_id, snapshot_id, run_id, secucode, report_date, table_type, source_name,
-             notice_date, revision_notice_date, revision_type, metric_hash, semantic_hash,
+             notice_date, revision_notice_date, revision_type, observed_at,
+             metric_hash, semantic_hash,
              observation_seq, consolidate_scope, period_basis, currency, amount_unit,
              industry_type, standardized_fields, raw_fields, evidence_sufficient)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now', 'localtime')),
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.conn.execute(
             sql,
             (version_id, snapshot_id, run_id, secucode, report_date, table_type, source_name,
-             notice_date, revision_notice_date, revision_type, metric_hash, semantic_hash,
+             notice_date, revision_notice_date, revision_type, observed_at,
+             metric_hash, semantic_hash,
              next_seq, consolidate_scope, period_basis, currency, amount_unit,
              industry_type, standardized_fields, raw_fields, evidence_sufficient),
         )
 
         # R3：记录首次观察与 snapshot 的关联
         # A3：保存本次观察的公告/修订元信息
+        # H1：首次观察同样使用本次响应真实接收时间（UTC）
         self._record_observation(
             version_id, snapshot_id, run_id,
             notice_date=notice_date,
@@ -1253,15 +1309,18 @@ class Repository:
             row_index=row_index,
             entry_time=entry_time,
             normalization_diagnostics=normalization_diagnostics,
+            observed_at=observed_at,
         )
 
         # 标记旧版本为替代（同分组内仅最新为 0）
-        self.conn.execute("""
-            UPDATE statement_version
-            SET is_superseded = 1, superseded_by = ?
-            WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
-              AND version_id != ?
-        """, (version_id, secucode, report_date, table_type, source_name, version_id))
+        # 2B-2：defer_projection 时由协调器统一重建当前投影
+        if not defer_projection:
+            self.conn.execute("""
+                UPDATE statement_version
+                SET is_superseded = 1, superseded_by = ?
+                WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ?
+                  AND version_id != ?
+            """, (version_id, secucode, report_date, table_type, source_name, version_id))
 
         return version_id
 
@@ -1750,6 +1809,54 @@ class Repository:
         return self.conn.execute(
             sql, (secucode, report_date, table_type, source_name)
         ).fetchall()
+
+    def count_versions_for_run(self, run_id: str) -> int:
+        """本批次已持久化的版本数（含复用版本的本次观察，不含回滚事务）。"""
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM statement_version WHERE run_id = ?", (run_id,)
+        ).fetchone()[0]
+
+    def count_observations_for_run(self, run_id: str) -> int:
+        """本批次已持久化的观察数；业务事务回滚后计数回到事务前。"""
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM statement_observation WHERE run_id = ?", (run_id,)
+        ).fetchone()[0]
+
+    def apply_current_version(
+        self, secucode: str, report_date: str, table_type: str,
+        source_name: str, version_id: str,
+    ) -> bool:
+        """把组内唯一当前版本设为 version_id，其余版本标记为已替代。
+
+        2B-2：协调器在同一业务事务内按阶段一选值规则选出候选后调用；不在
+        create_statement_version 内按到达顺序翻转当前投影（较旧公告后到不能
+        降级覆盖已知新版）。返回是否有标记发生变化。
+        """
+        row = self.conn.execute(
+            "SELECT is_superseded, superseded_by FROM statement_version "
+            "WHERE version_id = ? AND secucode = ? AND report_date = ? "
+            "AND table_type = ? AND source_name = ?",
+            (version_id, secucode, report_date, table_type, source_name),
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"version_id={version_id} 不属于分组 "
+                f"({secucode}, {report_date}, {table_type}, {source_name})"
+            )
+        changed = row["is_superseded"] != 0 or row["superseded_by"] is not None
+        self.conn.execute(
+            "UPDATE statement_version SET is_superseded = 0, superseded_by = NULL "
+            "WHERE version_id = ?",
+            (version_id,),
+        )
+        cur = self.conn.execute(
+            "UPDATE statement_version SET is_superseded = 1, superseded_by = ? "
+            "WHERE secucode = ? AND report_date = ? AND table_type = ? AND source_name = ? "
+            "AND version_id != ? AND (is_superseded != 1 OR superseded_by IS NOT ?)",
+            (version_id, secucode, report_date, table_type, source_name,
+             version_id, version_id),
+        )
+        return changed or cur.rowcount > 0
 
     def get_latest_versions_for_report(
         self, secucode: str, report_date: str

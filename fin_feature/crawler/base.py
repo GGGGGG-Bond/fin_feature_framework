@@ -15,6 +15,28 @@ from fin_feature.utils.logger import setup_logger
 logger = setup_logger("fin_feature.crawler")
 
 
+def build_filter_string(filters: dict | None) -> str:
+    """将 dict 构建为东方财富 API 的 filter 字符串。
+
+    支持 = / >= / <= 操作符。键以 __ 后缀指定操作符，如 REPORTDATE__gte。
+    示例: {"SECUCODE": "002501.SZ", "REPORTDATE__gte": "2024-01-01"}
+        -> '(SECUCODE="002501.SZ")(REPORTDATE>='2024-01-01')'
+    """
+    if not filters:
+        return ""
+    parts = []
+    for key, value in filters.items():
+        if key.endswith("__gte"):
+            field = key[:-5]
+            parts.append(f"({field}>='{value}')")
+        elif key.endswith("__lte"):
+            field = key[:-5]
+            parts.append(f"({field}<='{value}')")
+        else:
+            parts.append(f'({key}="{value}")')
+    return "".join(parts)
+
+
 class CrawlerError(Exception):
     """爬虫异常基类。"""
 
@@ -47,25 +69,8 @@ class BaseCrawler(ABC):
         self.rate_limiter = RateLimiter(min_interval)
 
     def _build_filter_string(self, filters: dict | None) -> str:
-        """将 dict 构建为东方财富 API 的 filter 字符串。
-
-        支持 = / >= / <= 操作符。键以 __ 后缀指定操作符，如 REPORTDATE__gte。
-        示例: {"SECUCODE": "002501.SZ", "REPORTDATE__gte": "2024-01-01"}
-            -> '(SECUCODE="002501.SZ")(REPORTDATE>=\'2024-01-01\')'
-        """
-        if not filters:
-            return ""
-        parts = []
-        for key, value in filters.items():
-            if key.endswith("__gte"):
-                field = key[:-5]
-                parts.append(f"({field}>='{value}')")
-            elif key.endswith("__lte"):
-                field = key[:-5]
-                parts.append(f"({field}<='{value}')")
-            else:
-                parts.append(f'({key}="{value}")')
-        return "".join(parts)
+        """将 dict 构建为东方财富 API 的 filter 字符串（委托模块函数）。"""
+        return build_filter_string(filters)
 
     def _request_with_retry(self, url: str, params: dict) -> dict:
         """带重试的 HTTP GET 请求，返回解析后的 JSON。
