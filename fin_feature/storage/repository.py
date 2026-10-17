@@ -1519,26 +1519,48 @@ class Repository:
         # 查询本单元每页的实际最终尝试（同页最大 http_attempt），证明引用的快照必须
         # 恰为该最终尝试的唯一 snapshot——旧成功快照在后续失败/running 尝试存在时不能冒充。
         final_attempts_by_page = self._final_attempts_by_page(unit["unit_id"])
+        # E1：证明引用集合必须精确覆盖整个单元的最终页集合，不能是任意子集。
+        # 遗漏/重复/范围外页均拒绝——局部页都成功不代表单元完整。
+        proof_pages: set[int] = set()
         for page_snapshot_id in page_ids:
             page = self.get_snapshot(page_snapshot_id)
             if page is None:
                 raise ValueError(f"单元页证据 {page_snapshot_id} 不存在")
-            if page["raw_format"] != "http-body-v1" or page["validation_status"] != "valid":
-                raise ValueError(
-                    f"单元页证据 {page_snapshot_id} 未经 v4 校验（format/validation 不符）"
-                )
             attempt = self.get_attempt(page["attempt_id"]) if page["attempt_id"] else None
             if attempt is None or attempt["unit_id"] != unit["unit_id"]:
                 raise ValueError(
                     f"单元页证据 {page_snapshot_id} 不属于单元 {unit['unit_id']}"
                 )
+            proof_pages.add(attempt["page_number"])
+        expected_pages = set(final_attempts_by_page.keys())
+        # E1：重复页单独检查——即使页集合恰好匹配，重复引用也破坏证明的精确性
+        if len(page_ids) != len(proof_pages):
+            raise ValueError(
+                f"单元完整性证明未精确覆盖全部最终页（证明包含重复页）："
+                f"证明引用 {len(page_ids)} 个快照但只覆盖 {len(proof_pages)} 页"
+            )
+        if proof_pages != expected_pages:
+            missing = sorted(expected_pages - proof_pages)
+            extra = sorted(proof_pages - expected_pages)
+            detail = []
+            if missing:
+                detail.append(f"遗漏页 {missing}")
+            if extra:
+                detail.append(f"范围外页 {extra}")
+            raise ValueError(
+                f"单元完整性证明未精确覆盖全部最终页（{', '.join(detail)}）："
+                f"证明页 {sorted(proof_pages)}，单元最终页 {sorted(expected_pages)}"
+            )
+        for page_snapshot_id in page_ids:
+            page = self.get_snapshot(page_snapshot_id)
+            if page["raw_format"] != "http-body-v1" or page["validation_status"] != "valid":
+                raise ValueError(
+                    f"单元页证据 {page_snapshot_id} 未经 v4 校验（format/validation 不符）"
+                )
+            attempt = self.get_attempt(page["attempt_id"])
             # D2：核对证明引用的快照恰为该页最终尝试的唯一 snapshot
             page_number = attempt["page_number"]
-            final_attempt = final_attempts_by_page.get(page_number)
-            if final_attempt is None:
-                raise ValueError(
-                    f"单元页 {page_number} 没有最终尝试记录，无法确定最终页身份"
-                )
+            final_attempt = final_attempts_by_page[page_number]
             if final_attempt["attempt_id"] != attempt["attempt_id"]:
                 raise ValueError(
                     f"单元页 {page_number} 的最终尝试是 http_attempt="

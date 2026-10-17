@@ -250,9 +250,11 @@ def _check_unit_evidence(conn, raw_store, unit, add) -> None:
                 snapshot_id=snapshot["snapshot_id"],
             )
             continue
-        # C3/D3：解析原页信封，核对声明范围与连续页号。
+        # C3/D3/E2/E3：解析原页信封，按 unit_kind 分派规则。
         # D3：解析失败不能跳过——非 JSON/HTML/缺 result/非法类型都须报告诊断。
-        envelope = _parse_page_envelope(raw_store, snapshot)
+        # E2：财务与股票发现信封形状不同，须按 unit_kind 分派；财务合法空页 pages=0/1。
+        # E3：success/data/pages/count 严格校验，bool 不当 int，多余页也报。
+        envelope = _parse_page_envelope(raw_store, snapshot, unit["unit_kind"])
         if envelope["error"] is not None:
             add(
                 "envelope_parse_failed", SEVERITY_ERROR,
@@ -271,17 +273,27 @@ def _check_unit_evidence(conn, raw_store, unit, add) -> None:
         _check_page_completeness(conn, unit, envelopes, final_by_page, total_rows, add)
 
 
-def _parse_page_envelope(raw_store: RawStore, snapshot) -> dict:
-    """从原体响应解析分页信封。
+def _is_int_not_bool(value) -> bool:
+    """E3c：bool 是 int 的子类，须排除——pages=True/count=True 不能当整数接受。"""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _parse_page_envelope(raw_store: RawStore, snapshot, unit_kind: str = "financial") -> dict:
+    """从原体响应解析分页信封，按 unit_kind 分派规则。
 
     D3：返回强类型结果，不用 None 表示"跳过"。
-    - pages：声明的总页数（必需，缺失/非 int 则 error）
+    - pages：声明的总页数（财务必需，缺失/非 int 则 error）
     - count：声明的总记录数（可选，缺失不影响页数完整性检查）
+    - data_rows：本页 data 列表长度（E3b：用于核对实际行数）
     - error：解析失败原因（非 None 时该页须报告诊断，不能 clean）
+
+    E2：财务信封为 {success, result:{pages,count,data}}；股票发现为 {rc, data:{total,diff}}。
+    E2a：财务合法空页 pages=0 或 pages=1 且 data=[]。
+    E3：success 必须严格 true；data 必须存在且为列表；pages/count 排除 bool。
     文件错误（缺文件/哈希不符）由文件诊断记录，不在此重复；JSON/结构错误须独立诊断。
     """
     import json
-    result = {"pages": None, "count": None, "error": None}
+    result = {"pages": None, "count": None, "data_rows": None, "error": None}
     try:
         body = raw_store.verify({
             "file_path": snapshot["file_path"],
@@ -299,28 +311,73 @@ def _parse_page_envelope(raw_store: RawStore, snapshot) -> dict:
     if not isinstance(payload, dict):
         result["error"] = f"响应顶层非对象：{type(payload).__name__}"
         return result
+
+    if unit_kind == "stock_list":
+        # E2b：股票发现信封为 {rc, data:{total,diff}}，不要求财务 result
+        return _parse_stock_list_envelope(payload, result)
+
+    # 财务信封：{success, result:{pages,count,data}}
+    success = payload.get("success")
+    if success is not True:
+        result["error"] = f"业务失败：success={success!r}（应为 true）"
+        return result
     inner = payload.get("result")
     if not isinstance(inner, dict):
         result["error"] = "响应缺少 result 对象"
         return result
+    data = inner.get("data")
+    if not isinstance(data, list):
+        result["error"] = f"信封 result.data 缺失或非列表：{type(data).__name__}"
+        return result
+    result["data_rows"] = len(data)
     pages = inner.get("pages")
-    if not isinstance(pages, int) or pages < 1:
-        result["error"] = f"信封 pages 非正整数：{pages!r}"
+    # E2a：合法空页 pages=0 或 pages=1；E3c：排除 bool
+    if not _is_int_not_bool(pages) or pages < 0:
+        result["error"] = f"信封 pages 非非负整数：{pages!r}"
         return result
     result["pages"] = pages
     count = inner.get("count")
     if count is not None:
-        if not isinstance(count, int) or count < 0:
+        if not _is_int_not_bool(count) or count < 0:
             result["error"] = f"信封 count 非非负整数：{count!r}"
             return result
         result["count"] = count
     return result
 
 
+def _parse_stock_list_envelope(payload: dict, result: dict) -> dict:
+    """E2b：股票发现信封 {rc, data:{total,diff}}，不套用财务全分页规则。"""
+    rc = payload.get("rc")
+    if rc is not None and rc != 0:
+        result["error"] = f"股票发现业务失败：rc={rc!r}"
+        return result
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        result["error"] = f"股票发现响应缺少 data 对象：{type(data).__name__}"
+        return result
+    diff = data.get("diff")
+    if not isinstance(diff, list):
+        result["error"] = f"股票发现 data.diff 缺失或非列表：{type(diff).__name__}"
+        return result
+    result["data_rows"] = len(diff)
+    # 股票发现不分页，pages 设为 1 以跳过财务页数完整性检查
+    result["pages"] = 1
+    total = data.get("total")
+    if total is not None:
+        if not _is_int_not_bool(total) or total < 0:
+            result["error"] = f"股票发现 data.total 非非负整数：{total!r}"
+            return result
+        result["count"] = total
+    return result
+
+
 def _check_page_completeness(conn, unit, envelopes, final_by_page, total_rows, add) -> None:
-    """C3：核对声明页数、连续页号与合计行数。缺页不得 clean。
+    """C3/E3：核对声明页数、连续页号与合计行数。缺页/多余页不得 clean。
 
     D3：count 可选——缺失时只跳过总行数一致性检查，不影响页数完整性。
+    E3d：一旦某页出现有效 count，所有已出现 count 必须一致，且完整范围的实际总行数
+    必须匹配该已知 count（不要求每页都重复提供）。
+    E3e：页号集合必须等于声明范围，既查缺页也查多余页。
     """
     # 各页声明的总页数应一致
     declared_pages_set = {e["pages"] for e in envelopes}
@@ -332,19 +389,39 @@ def _check_page_completeness(conn, unit, envelopes, final_by_page, total_rows, a
         )
         return
     declared_pages = declared_pages_set.pop()
-    actual_pages = sorted(final_by_page.keys())
-    # 页号必须从 1 连续到声明总页数
-    expected_pages = list(range(1, declared_pages + 1))
-    missing = sorted(set(expected_pages) - set(actual_pages))
+    actual_pages = set(final_by_page.keys())
+
+    # E2a：合法空页 pages=0——单页空响应，不要求连续页号
+    if declared_pages == 0:
+        if actual_pages != {1}:
+            add(
+                "missing_declared_page", SEVERITY_ERROR,
+                f"成功单元声明 pages=0（合法空），但实际页号 {sorted(actual_pages)}（应为 [1]）",
+                run_id=unit["run_id"], unit_id=unit["unit_id"],
+            )
+        return
+
+    # 页号集合必须等于声明范围 [1, declared_pages]，既查缺页也查多余页
+    expected_pages = set(range(1, declared_pages + 1))
+    missing = sorted(expected_pages - actual_pages)
+    extra = sorted(actual_pages - expected_pages)
     if missing:
         add(
             "missing_declared_page", SEVERITY_ERROR,
             f"成功单元声明 {declared_pages} 页，但缺少页 {missing}",
             run_id=unit["run_id"], unit_id=unit["unit_id"],
         )
-    # D3：count 可选——只在所有页都提供 count 时检查总行数一致性
+    if extra:
+        add(
+            "extra_page_outside_declared_range", SEVERITY_ERROR,
+            f"成功单元声明 {declared_pages} 页，但有多余页 {extra}",
+            run_id=unit["run_id"], unit_id=unit["unit_id"],
+        )
+
+    # E3d：count 可选——一旦某页出现有效 count，所有已出现 count 必须一致，
+    # 且完整范围的实际总行数必须匹配该已知 count
     counts = [e["count"] for e in envelopes if e["count"] is not None]
-    if len(counts) == len(envelopes):
+    if counts:
         declared_count_set = set(counts)
         if len(declared_count_set) != 1:
             add(
