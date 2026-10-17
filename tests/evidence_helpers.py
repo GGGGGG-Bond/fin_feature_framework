@@ -80,6 +80,8 @@ class EvidenceEnv:
         if unit_kind == "stock_list":
             report_name = "stock_list"
             secucode = ""
+            if request_scope is None:
+                scope_json = normalize_request_scope({"endpoint": "/api/qt/clist/get", "stock_count": 1, "page_size": 100, "mapping_version": MAPPING_VERSION})
         unit_key = compute_unit_key(
             source_name=self.source_name,
             unit_kind=unit_kind,

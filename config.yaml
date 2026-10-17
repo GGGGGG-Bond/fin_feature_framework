@@ -1,5 +1,5 @@
 # 金融数据处理与特征工程框架 - 主配置
-# 配置版本：stage1-v1
+# 配置版本：stage2b-v1
 
 database:
   path: "data/finance.db"
@@ -10,7 +10,7 @@ crawler:
   page_size: 50
   timeout: 15
   min_interval: 1.5        # 请求最小间隔（秒），反爬频率控制
-  max_retries: 3            # 单页最大重试次数
+  max_retries: 3            # 单页最多 HTTP 尝试数（含首次请求）
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
   referer: "https://data.eastmoney.com/"
 
@@ -23,11 +23,17 @@ crawl:
     balance_sheet: "RPT_DMSK_FN_BALANCE"
   # 近 N 个报告期；不填则爬取公司全部历史
   recent_periods: 4
+  max_pages_per_unit: 1000  # 财务/股票发现的分页安全上限；截断即失败
+
+# 原始 HTTP 响应证据；root 相对数据库所在目录解析
+raw_store:
+  root: null               # 默认数据库同目录下 raw/
+  max_body_bytes: 33554432  # 单响应解压后上限：32 MiB
 
 # 清洗规则（标准单位：小数为比例，金额为元）
 # 定义版本：stage1-v1
 cleaning:
-  # 异常值阈值：字段 -> [min, max]，超出范围置 NULL 并记日志
+  # 异常值阈值：字段 -> [min, max]，超出范围记日志并保留原计量
   # 阈值使用标准单位（小数）
   outlier_thresholds:
     weightavg_roe: [-2.0, 2.0]       # 加权 ROE，小数（-200% 到 200%）

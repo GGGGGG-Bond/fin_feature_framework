@@ -125,11 +125,9 @@ def parse_stock_list_envelope(body: bytes) -> ParsedEnvelope:
             error=f"响应顶层非对象：{type(payload).__name__}", error_code="schema_error"
         )
 
-    rc = payload.get("rc")
-    if rc is not None and rc != 0:
-        return ParsedEnvelope(
-            error=f"股票发现业务失败：rc={rc!r}", error_code="business_error"
-        )
+    for key in ("ret", "rc"):
+        if key in payload and (not _is_int_not_bool(payload[key]) or payload[key] != 0):
+            return ParsedEnvelope(error="stock discovery business status is not zero", error_code="business_error")
     data = payload.get("data")
     if not isinstance(data, dict):
         return ParsedEnvelope(
@@ -146,12 +144,8 @@ def parse_stock_list_envelope(body: bytes) -> ParsedEnvelope:
     all_objects = all(isinstance(item, dict) for item in diff)
 
     total = data.get("total")
-    if total is not None:
-        if not _is_int_not_bool(total) or total < 0:
-            return ParsedEnvelope(
-                error=f"股票发现 data.total 非非负整数：{total!r}",
-                error_code="schema_error",
-            )
+    if not _is_int_not_bool(total) or total < 0:
+        return ParsedEnvelope(error="stock discovery total must be a non-negative integer", error_code="schema_error")
 
     return ParsedEnvelope(
         pages=1,  # 股票发现不分页

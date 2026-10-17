@@ -97,6 +97,10 @@ def load_config(config_path: str | Path | None = None) -> Config:
     data = dict(_DEFAULTS)
     if path.exists():
         with open(path, "r", encoding="utf-8") as f:
-            file_data = yaml.safe_load(f) or {}
+            file_data = yaml.safe_load(f)
+            if file_data is None:
+                file_data = {}
+        if not isinstance(file_data, dict):
+            raise ValueError("configuration root must be an object")
         data = _deep_merge(data, file_data)
     return Config(data)
