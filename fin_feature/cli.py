@@ -370,9 +370,15 @@ def main() -> None:
     sub.add_parser("refresh", help="原子清洗当前版本并重算受修订影响公司的全部报告期")
     from fin_feature.refresh import cmd_refresh
 
+    dr = sub.add_parser("delivery-report", help="只读导出运行、证据、输入血缘及特征覆盖")
+    dr.add_argument("--output-dir", required=True, help="证据根以外且不存在的新目录")
+    dr.add_argument("--review-summary", default=None, help="可选双源抽查汇总快照，不重新核查PDF")
+    from fin_feature.delivery import cmd_delivery_report
+
     args = parser.parse_args()
 
     commands = {
+        "delivery-report": cmd_delivery_report,
         "as-of": cmd_asof,
         "refresh": cmd_refresh,
         "crawl": cmd_crawl,

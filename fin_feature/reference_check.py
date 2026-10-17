@@ -10,7 +10,7 @@ from pathlib import Path
 from fin_feature.reconcile import index_document, number, UNITS, FIELDS, known
 
 
-DOCUMENT_UNITS = {'yuan': Decimal(1), 'wan_yuan': Decimal(10000), 'million_yuan': Decimal(1000000)}
+DOCUMENT_UNITS = {'yuan': Decimal(1), 'wan_yuan': Decimal(10000), 'million_yuan': Decimal(1000000), 'thousand_yuan': Decimal(1000)}
 
 
 def digest(body):
