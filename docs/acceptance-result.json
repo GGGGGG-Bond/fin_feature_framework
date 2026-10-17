@@ -1,0 +1,154 @@
+{
+  "schema": "project-acceptance-v1",
+  "validated_at_utc": "2026-10-17T17:19:09.466115+00:00",
+  "validated_code_commit": "2ace51b22d2791753a9f925665cfd807a9344caf",
+  "tested_code_files": 121,
+  "tested_code_content_sha256": "1853b2bce0ebf34d6baf447f93c117c04173cce45ede5c3e446eefd37b8983a6",
+  "scope": "implementation-plan stages 0-5, bounded saved-history and sample acceptance",
+  "self_review": true,
+  "independent_review_this_round": false,
+  "runtime": {
+    "python": "3.12.3",
+    "isolated_virtualenv": true,
+    "system_site_packages": false,
+    "clean_checkout": true,
+    "constraints_sha256": "a9847c34d6c35c427288e348840f89d835316d11bf186ec50e31f14011952a5e"
+  },
+  "offline_tests": {
+    "passed": 770,
+    "network_deselected": 11,
+    "elapsed_seconds": 21.03
+  },
+  "offline_commands": [
+    {
+      "name": "tests",
+      "exit_code": 0,
+      "expected_exit_code": 0
+    },
+    {
+      "name": "cli",
+      "exit_code": 0,
+      "expected_exit_code": 0
+    },
+    {
+      "name": "artificial",
+      "exit_code": 0,
+      "expected_exit_code": 0
+    },
+    {
+      "name": "revision",
+      "exit_code": 0,
+      "expected_exit_code": 0
+    },
+    {
+      "name": "public",
+      "exit_code": 0,
+      "expected_exit_code": 0
+    },
+    {
+      "name": "reconciliation",
+      "exit_code": 1,
+      "expected_exit_code": 1
+    },
+    {
+      "name": "delivery",
+      "exit_code": 0,
+      "expected_exit_code": 0
+    },
+    {
+      "name": "replay",
+      "exit_code": 0,
+      "expected_exit_code": 0
+    },
+    {
+      "name": "system-asof",
+      "exit_code": 0,
+      "expected_exit_code": 0
+    },
+    {
+      "name": "public-asof",
+      "exit_code": 1,
+      "expected_exit_code": 1
+    }
+  ],
+  "offline_demos": {
+    "artificial": {
+      "network_requests": 0,
+      "features": 24,
+      "replay_count": 24,
+      "replay_matches": 24,
+      "audit_exit_code": 0
+    },
+    "revision": {
+      "network_requests": 0,
+      "earlier_gross_margin": 0.4,
+      "later_gross_margin": 0.8,
+      "replay_count": 48,
+      "replay_matches": 48
+    },
+    "public": {
+      "network_requests": 0,
+      "features": 72,
+      "non_null_features": 16,
+      "replay_count": 72,
+      "replay_matches": 72,
+      "report_exit_code": 0
+    }
+  },
+  "live_primary_smoke": {
+    "schema": "live-smoke-v1",
+    "original_vendor_responses": true,
+    "secucode": "600519.SH",
+    "requested_start": "2024-09-30",
+    "requested_end": "2024-12-31",
+    "maximum_requests": 3,
+    "actual_attempts": 3,
+    "ingest_status": "success",
+    "failed_units": 0,
+    "financial_units": 3,
+    "features": 24,
+    "non_null_features": 8,
+    "report_exit_code": 0,
+    "evidence_audit_clean": true,
+    "saved_report_periods": [
+      "2024-09-30",
+      "2024-12-31"
+    ],
+    "saved_periods_in_scope": true,
+    "replay_count": 24,
+    "replay_matches": 24,
+    "public_visibility_verified": false,
+    "exit_code": 0
+  },
+  "stage3": {
+    "planned_pairs": 96,
+    "numeric_pairs": 84,
+    "official_reference_checked": 34,
+    "official_reference_matches": 34,
+    "numeric_unreviewed": 50,
+    "source_missing": 12,
+    "real_restatement_case": "examples/references/sany-revision-case.json",
+    "upstream_independence_verified": false,
+    "provider_revision_alignment_verified": false
+  },
+  "artifact": {
+    "wheel": "fin_feature_framework-0.2.0-py3-none-any.whl",
+    "sha256": "64c787290967e99b1b53ae32e2dd319475647d95e4e6bdd9e7b8c7e1f8e0eb8f",
+    "pip_check_passed": true,
+    "wheel_smoke_passed": true
+  },
+  "evidence": {
+    "offline_archive": "data/acceptance-20261018",
+    "live_archive": "data/live-smoke-20261018",
+    "archive_audit_exit_code": 0,
+    "archive_replay_matches": 24
+  },
+  "gitlab_ci_executed": false,
+  "production_or_existing_business_db_changed": false,
+  "limits": [
+    "50 numeric sample pairs not manually reviewed; 12 source fields missing by definition.",
+    "Production revision public dates remain unknown; only explicitly dated saved observations support public history.",
+    "No restoration of uncaptured historical versions or historical software environment.",
+    "Current-version financial growth grouping is descriptive, not a tradable or investment return backtest."
+  ]
+}
