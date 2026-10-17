@@ -12,9 +12,9 @@
 
 ## 当前状态（2026-10-17）
 
-阶段 1、2A、2B 已合入；MR!8 合入 main `194610b`，与送审头 `d41673d` 文件树一致。本批从该 main 实施 2C，代码 `3b3c5d8` + 季度报告期门禁 `9f9a26d`（分支 `feat/stage2c`），完成实现与自验证，待 MR 审阅。全量离线 597 passed、11 deselected，新增 45 项；未调用真实接口、未升级真实业务库。2D 尚未开始。
+阶段 1、2A、2B、2C 已合入（MR!9，main `50ef8a6`）。按用户“优先跑通流程、后集中验收优化”的节奏，本批交付 2D 最小流程：`feat/stage2d-flow`，代码 `2bf365b`；606 项离线通过、11 联网未执行，演示 24 条特征重放全部一致。待 MR 与后续集中验收；未联网或升级真实库，完整历史代码环境重放与双源/截至日能力尚待后续。
 
-采集已接入原始响应文件、逐次 HTTP 尝试、版本与观察血缘、单元事务和只读对账。特征输入已接入版本清洗结果；第二来源、离线重放和历史时点查询仍属后续工作，详见 [当前进展](docs/progress.md)。采集配置与退出码见 [2B 操作指南](docs/stage-2/2b-operations.md)，清洗、血缘与 v5 升级说明见 [2C 操作指南](docs/stage-2/2c-operations.md)。
+采集已接入原始响应文件、逐次 HTTP 尝试、版本与观察血缘、单元事务和只读对账。特征输入已接入版本清洗结果，并提供当前代码下的基础离线重放；第二来源和历史时点查询仍属后续工作，详见 [当前进展](docs/progress.md)。采集配置与退出码见 [2B 操作指南](docs/stage-2/2b-operations.md)，清洗、血缘与 v5 升级说明见 [2C 操作指南](docs/stage-2/2c-operations.md)。
 
 ## 文档索引
 
@@ -81,7 +81,7 @@ sqlite3 data/finance.db "SELECT * FROM clean_log LIMIT 10;"
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider -m 'not requires_network'
-# 本批：597 passed，11 个联网用例未执行
+# 本批：606 passed，11 个联网用例未执行
 ```
 
 ## 目录结构
@@ -95,7 +95,7 @@ fin_feature_framework/
 ├── config.yaml                     # 主配置
 ├── pyproject.toml                  # 项目元数据与依赖
 ├── fin_feature/                    # 主包
-│   ├── cli.py                      # CLI 入口（7 个子命令）
+│   ├── cli.py                      # CLI 入口（8 个子命令）
 │   ├── config.py / constants.py
 │   ├── crawler/                    # 爬虫（反爬：频率控制+UA伪装+重试）
 │   ├── ingestion/                  # 留证请求、分页、发现与财务协调器
@@ -135,3 +135,12 @@ fin_feature_framework/
 | backtest.n_groups | 回测分组数 | 5 |
 
 采集上限、证据路径、退出码和对账命令见 [2B 操作指南](docs/stage-2/2b-operations.md)，开发说明见 [docs/development.md](docs/development.md)。
+
+## 离线闭环演示
+
+```bash
+# 人工构造样例，不访问网络；输出目录必须尚不存在
+.venv/bin/python -m examples.offline_flow --output-dir data/offline-demo
+```
+
+完成采集留证 → 清洗 → 特征 → 重放 → 对账，输出 summary.json / replay.json。示例结果为 3 个财务单元、24 条特征、24 条重放一致、对账退出 0。重放入口与限制见 [2D 流程说明](docs/stage-2/2d-flow.md)。
