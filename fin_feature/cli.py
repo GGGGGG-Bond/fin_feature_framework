@@ -348,6 +348,13 @@ def main() -> None:
     ss.add_argument("--output-dir", required=True, help="必须不存在的新目录，保留原体及报告")
     from fin_feature.source_sample import cmd_source_sample
 
+    rr = sub.add_parser("reference-check", help="对照人工核实的年报检查固定样本（离线）")
+    rr.add_argument("--left", required=True)
+    rr.add_argument("--right", required=True)
+    rr.add_argument("--reference", required=True, help="reviewed-reference-v1 JSON")
+    rr.add_argument("--document", required=True, help="已保存且哈希匹配的官方年报 PDF")
+    from fin_feature.reference_check import cmd_reference_check
+
     args = parser.parse_args()
 
     commands = {
@@ -362,6 +369,7 @@ def main() -> None:
         "replay": cmd_replay,
         "reconcile": cmd_reconcile,
         "source-sample": cmd_source_sample,
+        "reference-check": cmd_reference_check,
     }
     result = commands[args.command](args)
     # 传播退出码（None 视为成功）

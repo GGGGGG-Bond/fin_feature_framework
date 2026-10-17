@@ -1,0 +1,156 @@
+{
+  "schema": "reviewed-reference-v1",
+  "reviewed_by": "Codex manual PDF page review, 2026-10-17",
+  "document": {
+    "url": "https://www.moutai.com.cn/mtgf/articleFileDir/2025-04/08/8055b7bed7db41bdbc617f4c9b9ec591.pdf",
+    "title": "贵州茅台2024年年度报告",
+    "sha256": "5299f4940e2ce4e91084b73dc457d558b9d335fa76fbfee6227e4254eb7f4a30"
+  },
+  "input_sha256": [
+    "a2a103e2bfcc30e437cd1e3dea6d27f01f5254cf28accaf72feda4fd140d8782",
+    "696abe31b7e14145d747b95b1227cc1f56fc778e34890f78d0a3f9aaa19c039d"
+  ],
+  "currency": "CNY",
+  "unit": "yuan",
+  "scope": "consolidated",
+  "source_units": {
+    "eastmoney": "yuan",
+    "sina": "yuan"
+  },
+  "absolute_tolerance": "0.01",
+  "review_note": "Fields and both annual columns checked on issuer PDF pages 58-64. Unit declarations apply only to pinned sample fields; historical visibility and provider revision identity remain unverified.",
+  "records": [
+    {
+      "secucode": "600519.SH",
+      "report_date": "2024-12-31",
+      "field": "total_assets",
+      "value": "298944579918.70",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 59,
+      "row_label": "资产总计",
+      "column_label": "2024年12月31日"
+    },
+    {
+      "secucode": "600519.SH",
+      "report_date": "2023-12-31",
+      "field": "total_assets",
+      "value": "272699660092.25",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 59,
+      "row_label": "资产总计",
+      "column_label": "2023年12月31日"
+    },
+    {
+      "secucode": "600519.SH",
+      "report_date": "2024-12-31",
+      "field": "total_liabilities",
+      "value": "56933264798.10",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 60,
+      "row_label": "负债合计",
+      "column_label": "2024年12月31日"
+    },
+    {
+      "secucode": "600519.SH",
+      "report_date": "2023-12-31",
+      "field": "total_liabilities",
+      "value": "49043190797.43",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 60,
+      "row_label": "负债合计",
+      "column_label": "2023年12月31日"
+    },
+    {
+      "secucode": "600519.SH",
+      "report_date": "2024-12-31",
+      "field": "total_equity",
+      "value": "242011315120.60",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 61,
+      "row_label": "所有者权益（或股东权益）合计",
+      "column_label": "2024年12月31日"
+    },
+    {
+      "secucode": "600519.SH",
+      "report_date": "2023-12-31",
+      "field": "total_equity",
+      "value": "223656469294.82",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 61,
+      "row_label": "所有者权益（或股东权益）合计",
+      "column_label": "2023年12月31日"
+    },
+    {
+      "secucode": "600519.SH",
+      "report_date": "2024-12-31",
+      "field": "total_operate_income",
+      "value": "174144069958.25",
+      "table_type": "IS",
+      "period_basis": "flow_ytd",
+      "page": 63,
+      "row_label": "营业总收入",
+      "column_label": "2024年度"
+    },
+    {
+      "secucode": "600519.SH",
+      "report_date": "2023-12-31",
+      "field": "total_operate_income",
+      "value": "150560330316.45",
+      "table_type": "IS",
+      "period_basis": "flow_ytd",
+      "page": 63,
+      "row_label": "营业总收入",
+      "column_label": "2023年度"
+    },
+    {
+      "secucode": "600519.SH",
+      "report_date": "2024-12-31",
+      "field": "operate_cost",
+      "value": "13789482367.98",
+      "table_type": "IS",
+      "period_basis": "flow_ytd",
+      "page": 63,
+      "row_label": "营业成本",
+      "column_label": "2024年度"
+    },
+    {
+      "secucode": "600519.SH",
+      "report_date": "2023-12-31",
+      "field": "operate_cost",
+      "value": "11867273851.78",
+      "table_type": "IS",
+      "period_basis": "flow_ytd",
+      "page": 63,
+      "row_label": "营业成本",
+      "column_label": "2023年度"
+    },
+    {
+      "secucode": "600519.SH",
+      "report_date": "2024-12-31",
+      "field": "parent_netprofit",
+      "value": "86228146421.62",
+      "table_type": "IS",
+      "period_basis": "flow_ytd",
+      "page": 64,
+      "row_label": "归属于母公司股东的净利润",
+      "column_label": "2024年度"
+    },
+    {
+      "secucode": "600519.SH",
+      "report_date": "2023-12-31",
+      "field": "parent_netprofit",
+      "value": "74734071550.75",
+      "table_type": "IS",
+      "period_basis": "flow_ytd",
+      "page": 64,
+      "row_label": "归属于母公司股东的净利润",
+      "column_label": "2023年度"
+    }
+  ]
+}
