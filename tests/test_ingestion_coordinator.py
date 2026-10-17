@@ -12,7 +12,7 @@ import sqlite3
 import pytest
 
 import fin_feature.ingestion.service as service_module
-import fin_feature.storage.repository as repository_module
+from fin_feature.cleaning.dedup import deduplicate, sort_key
 from fin_feature.ingestion.capture import ActiveTransactionError
 from fin_feature.ingestion.http_evidence import EvidenceRequestExecutor
 from fin_feature.ingestion.service import (
@@ -21,7 +21,11 @@ from fin_feature.ingestion.service import (
     FinancialIngestionCoordinator,
     FinancialUnitSpec,
 )
-from fin_feature.storage.repository import Repository
+from fin_feature.storage.database import get_connection
+from fin_feature.storage.field_mapping import map_fields
+from fin_feature.storage.migrations import run_migrations
+from fin_feature.utils.date_utils import normalize_date
+from evidence_helpers import EvidenceEnv
 
 from ingestion_helpers import (
     FIN,
@@ -70,6 +74,87 @@ def make_coordinator(env, session, *, max_retries=3, recent_periods=None,
 
 def spec(secucode=SECUCODE, report_name=FIN):
     return FinancialUnitSpec(secucode=secucode, report_name=report_name)
+
+
+def run_batch(env, rows, *, clock=None, **kwargs):
+    """以单页脚本化响应运行一个单元批次。"""
+    session = FakeSession({
+        1: [FakeResponse(body=body_for(rows, count=len(rows)))],
+    })
+    coordinator, _ = make_coordinator(env, session, clock=clock, **kwargs)
+    return coordinator.run([spec()])
+
+
+def env_with_connection(tmp_path, factory, name="custom"):
+    """用自定义 sqlite3.Connection 子类构造真实临时库环境。"""
+    conn = sqlite3.connect(str(tmp_path / f"{name}.db"), factory=factory)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    run_migrations(conn)
+    return EvidenceEnv(conn=conn, raw_root=str(tmp_path / f"{name}-raw"))
+
+
+def current_income(env):
+    rows = env.conn.execute(
+        "SELECT standardized_fields FROM statement_version WHERE is_superseded = 0"
+    ).fetchall()
+    assert len(rows) == 1
+    return json.loads(rows[0][0])["total_operate_income"]
+
+
+def phase1_selection_income(env):
+    """阶段一 clean 路径的实际去重结果（兼容 raw 消费口径）。"""
+    raw = env.conn.execute("SELECT * FROM raw_financial_indicator").fetchall()
+    return deduplicate(env.repo, "financial_indicator", raw)[0]["total_operate_income"]
+
+
+class CommitRaisesOnce(sqlite3.Connection):
+    """模拟 commit() 本身抛错（事务仍可回滚）。"""
+
+    armed = False
+    prior_run_id = ""
+
+    def commit(self):
+        if self.armed and self.execute(
+            "SELECT 1 FROM ingest_unit WHERE status = 'success' AND run_id != ?",
+            (self.prior_run_id,),
+        ).fetchone():
+            self.armed = False
+            raise sqlite3.OperationalError("injected commit failure")
+        return super().commit()
+
+
+class RealCommitFailure(sqlite3.Connection):
+    """用外部读锁让 SQLite 自身 commit 抛 database is locked。"""
+
+    armed = False
+    prior_run_id = ""
+    blocking_reader = None
+
+    def commit(self):
+        if self.armed and self.execute(
+            "SELECT 1 FROM ingest_unit WHERE status = 'success' AND run_id != ?",
+            (self.prior_run_id,),
+        ).fetchone():
+            self.armed = False
+            filename = self.execute("PRAGMA database_list").fetchone()[2]
+            self.blocking_reader = sqlite3.connect(filename, timeout=0)
+            self.blocking_reader.execute("BEGIN")
+            self.blocking_reader.execute("SELECT * FROM ingest_unit").fetchall()
+            self.execute("PRAGMA busy_timeout = 0")
+        return super().commit()
+
+
+class UnrecoverableCommit(RealCommitFailure):
+    """commit 失败后 rollback 也失败，连接停在不可恢复事务中。"""
+
+    rollback_fails = False
+
+    def rollback(self):
+        if self.rollback_fails:
+            self.rollback_fails = False
+            raise sqlite3.OperationalError("injected rollback failure")
+        return super().rollback()
 
 
 def assert_observed_matches_received(conn):
@@ -637,44 +722,28 @@ def test_b30_successful_unit_unaffected_by_other_unit_failure(evidence_env, monk
 # ----------------------------------------------------------------------
 # B31：提交失败 → 统计以已提交结果为准
 # ----------------------------------------------------------------------
-def test_b31_commit_failure_rolls_back_and_reports_failed(evidence_env, monkeypatch):
-    env = evidence_env
-    session = FakeSession({1: [FakeResponse(body=body_for([_row_for_run()], count=1))]})
-    coordinator, _ = make_coordinator(env, session)
+def test_b31_commit_failure_rolls_back_and_reports_failed(tmp_path):
+    """commit() 自身抛错：UOW 必须回滚，单元与批次都失败，不留业务写入。"""
+    env = env_with_connection(tmp_path, CommitRaisesOnce, "b31")
+    env.conn.armed = True
 
-    armed = {"pending": False}
-    original_finish = Repository.finish_unit
-
-    def finish_then_arm(self, unit_id, status, **kwargs):
-        original_finish(self, unit_id, status, **kwargs)
-        if status == "success":
-            armed["pending"] = True
-
-    monkeypatch.setattr(Repository, "finish_unit", finish_then_arm)
-
-    original_exit = repository_module._UnitOfWork.__exit__
-
-    def failing_exit(self, exc_type, exc_val, exc_tb):
-        if armed["pending"] and exc_type is None:
-            armed["pending"] = False
-            # 模拟提交失败：先按异常路径回滚，再向调用方报错
-            original_exit(self, sqlite3.OperationalError, None, None)
-            raise sqlite3.OperationalError("disk I/O error")
-        return original_exit(self, exc_type, exc_val, exc_tb)
-
-    monkeypatch.setattr(repository_module._UnitOfWork, "__exit__", failing_exit)
-
-    result = coordinator.run([spec()])
+    result = run_batch(env, [_row_for_run()])
 
     assert result.status == "failed"
     assert result.exit_code == 1
     assert result.units[0].status == "failed"
+    assert not env.conn.in_transaction, "提交失败后必须回滚，不能停留在未提交事务"
     assert count_rows(env.conn, "raw_financial_indicator") == 0
     assert count_rows(env.conn, "statement_version") == 0
     assert count_rows(env.conn, "statement_observation") == 0
     assert env.repo.get_watermark(FIN, SECUCODE) is None
     unit = env.repo.get_units_for_run(result.run_id)[0]
     assert unit["status"] == "failed"
+    run = env.conn.execute(
+        "SELECT status FROM ingest_run WHERE run_id = ?", (result.run_id,)
+    ).fetchone()
+    assert run["status"] == "failed"
+    env.conn.close()
 
 
 # ----------------------------------------------------------------------
@@ -797,3 +866,205 @@ def test_run_and_unit_identity_and_request_scope(evidence_env):
     assert call["params"]["pageSize"] == "50"
     assert SECUCODE in call["params"]["filter"]
     assert "SECUCODE" in call["params"]["filter"]
+
+
+# ----------------------------------------------------------------------
+# 复审 R1：真实 commit 失败必须回滚，不能报告 success / 0
+# ----------------------------------------------------------------------
+def test_r1_real_commit_failure_rolls_back_and_reports_failed(tmp_path):
+    """外部读锁使 SQLite commit 抛错：不预先回滚，验证真实失败路径。"""
+    env = env_with_connection(tmp_path, RealCommitFailure, "r1")
+    clock = StepClock()
+    prior = run_batch(env, [fi_row(income=200.0)], clock=clock)
+    assert prior.status == "success"
+    env.conn.prior_run_id = prior.run_id
+
+    versions_before = count_rows(env.conn, "statement_version")
+    watermark_before = env.repo.get_watermark(FIN, SECUCODE)
+    env.conn.armed = True
+    try:
+        result = run_batch(
+            env, [fi_row(income=300.0, notice_date="2024-05-01")], clock=clock,
+        )
+
+        assert result.status == "failed"
+        assert result.exit_code == 1
+        assert result.units[0].status == "failed"
+        assert result.success == 0
+        # 提交失败后 UOW 已回滚，连接不再持有未提交事务
+        assert not env.conn.in_transaction
+        assert not env.repo.transaction_broken
+
+        # 先前成功单元及其版本/水位不受影响
+        assert count_rows(env.conn, "statement_version") == versions_before
+        assert env.repo.get_watermark(FIN, SECUCODE) == watermark_before
+        assert count_rows(env.conn, "raw_financial_indicator") == 1
+        prior_units = env.repo.get_units_for_run(prior.run_id)
+        assert [unit["status"] for unit in prior_units] == ["success"]
+
+        # 外部读锁仍持有，失败结算与 run 终态无法落盘：保留 running 供对账
+        unit = env.repo.get_units_for_run(result.run_id)[0]
+        assert unit["status"] == "running"
+        run = env.conn.execute(
+            "SELECT status FROM ingest_run WHERE run_id = ?", (result.run_id,)
+        ).fetchone()
+        assert run["status"] == "running"
+
+        # 已有 reader 与重连 reader 都能看到回滚后的已提交状态（无写锁残留）
+        assert env.conn.blocking_reader.execute(
+            "SELECT COUNT(*) FROM statement_version"
+        ).fetchone()[0] == versions_before
+        reconnected = sqlite3.connect(str(tmp_path / "r1.db"), timeout=0)
+        try:
+            assert reconnected.execute(
+                "SELECT COUNT(*) FROM statement_version"
+            ).fetchone()[0] == versions_before
+        finally:
+            reconnected.close()
+    finally:
+        if env.conn.blocking_reader is not None:
+            env.conn.blocking_reader.rollback()
+            env.conn.blocking_reader.close()
+        env.conn.close()
+
+
+def test_r1_unrecoverable_rollback_stops_run_without_claiming_success(tmp_path):
+    """commit 与 rollback 都失败：终止运行，批次不得报告 success。"""
+    env = env_with_connection(tmp_path, UnrecoverableCommit, "r1b")
+    clock = StepClock()
+    prior = run_batch(env, [fi_row(income=200.0)], clock=clock)
+    assert prior.status == "success"
+    env.conn.prior_run_id = prior.run_id
+
+    env.conn.armed = True
+    env.conn.rollback_fails = True
+    try:
+        result = run_batch(
+            env, [fi_row(income=300.0, notice_date="2024-05-01")], clock=clock,
+        )
+
+        assert result.status == "failed"
+        assert result.exit_code == 1
+        assert result.units[0].status == "failed"
+        assert result.success == 0
+        assert env.repo.transaction_broken
+        assert env.conn.in_transaction, "回滚失败时连接停在未提交事务中"
+    finally:
+        if env.conn.blocking_reader is not None:
+            env.conn.blocking_reader.rollback()
+            env.conn.blocking_reader.close()
+        env.conn.rollback()
+        env.conn.close()
+
+
+# ----------------------------------------------------------------------
+# 复审 R2：同公告日的旧记录后到，不得降级兼容 raw / 阶段一消费
+# ----------------------------------------------------------------------
+def test_r2_same_notice_stale_record_does_not_downgrade_compat_raw(
+    evidence_env, monkeypatch
+):
+    env = evidence_env
+    clock = StepClock()
+    newer = fi_row(
+        notice_date="2024-04-20", entry_time="2024-04-20 18:00:00", income=200.0,
+    )
+    older = fi_row(
+        notice_date="2024-04-20", entry_time="2024-04-20 12:00:00", income=100.0,
+    )
+
+    assert run_batch(env, [newer], clock=clock).status == "success"
+    assert run_batch(env, [older], clock=clock).status == "success"
+
+    raw = env.conn.execute("SELECT * FROM raw_financial_indicator").fetchall()
+    assert len(raw) == 1, "同公司/期/公告日只有一行兼容 raw"
+    assert raw[0]["total_operate_income"] == 200.0, "旧 entry 后到不得覆盖新行"
+    assert phase1_selection_income(env) == 200.0, "阶段一实际去重必须读到当前值"
+    assert current_income(env) == 200.0
+    assert len(version_rows(env.conn)) == 2, "完整版本/观察仍保留"
+
+    # 更晚的真实修订仍可升级
+    newest = fi_row(
+        notice_date="2024-04-20", entry_time="2024-04-20 20:00:00", income=300.0,
+    )
+    assert run_batch(env, [newest], clock=clock).status == "success"
+    raw = env.conn.execute("SELECT * FROM raw_financial_indicator").fetchall()
+    assert len(raw) == 1 and raw[0]["total_operate_income"] == 300.0
+    assert phase1_selection_income(env) == 300.0
+    assert current_income(env) == 300.0
+
+    # 失败批次整体回滚：兼容 raw 原计量不变
+    original_apply = env.repo.apply_current_version
+
+    def fail_after(*args, **kwargs):
+        original_apply(*args, **kwargs)
+        raise sqlite3.OperationalError("injected after projection write")
+
+    monkeypatch.setattr(env.repo, "apply_current_version", fail_after)
+    stale = fi_row(
+        notice_date="2024-04-20", entry_time="2024-04-20 22:00:00", income=400.0,
+    )
+    failed = run_batch(env, [stale], clock=clock)
+    assert failed.status == "failed"
+    raw = env.conn.execute("SELECT * FROM raw_financial_indicator").fetchall()
+    assert len(raw) == 1 and raw[0]["total_operate_income"] == 300.0
+    assert current_income(env) == 300.0
+
+
+# ----------------------------------------------------------------------
+# 复审 R3：选值前统一规范化报告期，兼容 raw / 版本投影 / 阶段一一致
+# ----------------------------------------------------------------------
+def _expected_selection_income(rows):
+    """阶段一口径：规范化 report_date/notice_date 后取 sort_key 最大者。"""
+    mapped = [map_fields(row, FIN) for row in rows]
+    normalized = [
+        {
+            **record,
+            "report_date": normalize_date(record["report_date"]),
+            "notice_date": normalize_date(record["notice_date"]),
+        }
+        for record in mapped
+    ]
+    return sorted(normalized, key=sort_key)[-1]["total_operate_income"]
+
+
+def fresh_env(tmp_path, name):
+    conn = get_connection(str(tmp_path / f"{name}.db"))
+    run_migrations(conn)
+    return EvidenceEnv(conn=conn, raw_root=str(tmp_path / f"{name}-raw"))
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reverse"])
+def test_r3_mixed_report_date_formats_use_one_selection_rule(evidence_env, reverse):
+    rows = [
+        fi_row(report_date="2024/03/31", notice_date="2024-04-20", income=1.0),
+        fi_row(report_date="2024-03-31", notice_date="2024-04-20", income=100.0),
+    ]
+    expected = _expected_selection_income(rows)
+    env = evidence_env
+
+    result = run_batch(env, list(reversed(rows)) if reverse else rows)
+
+    assert result.status == "success"
+    assert current_income(env) == expected
+    assert phase1_selection_income(env) == expected
+    raw_fields = [json.loads(v["raw_fields"]) for v in version_rows(env.conn)]
+    assert {fields["report_date"] for fields in raw_fields} == {
+        "2024/03/31", "2024-03-31",
+    }, "版本保留原始报告期证据，只对选值用记录做规范化"
+
+
+def test_r3_cross_batch_mixed_format_matches_stage1(tmp_path):
+    rows = [
+        fi_row(report_date="2024/03/31", notice_date="2024-04-20", income=1.0),
+        fi_row(report_date="2024-03-31", notice_date="2024-04-20", income=100.0),
+    ]
+    expected = _expected_selection_income(rows)
+    env = fresh_env(tmp_path, "r3-batch")
+    clock = StepClock()
+
+    assert run_batch(env, [rows[0]], clock=clock).status == "success"
+    assert run_batch(env, [rows[1]], clock=clock).status == "success"
+
+    assert current_income(env) == expected
+    assert phase1_selection_income(env) == expected
+    env.conn.close()
