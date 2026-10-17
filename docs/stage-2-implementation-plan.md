@@ -313,7 +313,7 @@ CREATE INDEX IF NOT EXISTS idx_fcl_run ON feature_compute_log(compute_run_id);
 ### 证据充分性与可比性分离
 
 `evidence_sufficient` 与 `comparable` 是两个独立维度，不得混用或互相推导：
-- `evidence_sufficient`（statement_version 列）：证据是否完整——是否有原始响应可追溯。旧数据迁移为 0（无原始响应），新采集为 1。证据不足不阻断版本写入，但标注追溯受限。
+- `evidence_sufficient`（statement_version 列）：证据是否完整——是否有原始响应可追溯。旧数据迁移为 0（无原始响应）；2B 新内容经核验时为 1。复用旧内容时保留首次标记，新证据由本次观察关联表示，不能直接把“新采集”推断为版本首次证据充分。证据不足不阻断版本写入，但标注追溯受限。
 - `comparable`（跨版本/跨期判断，2C 实现）：两个版本或两个期间是否口径一致可比较——币种、计量、合并范围、期间基准、行业类型是否一致。`semantic_hash` 相同是可比的必要条件之一，但跨期比较还需相邻期口径一致。
 - 两者独立：证据充分的版本仍可能不可比（如 CNY 与 USD 版本）；证据不足的旧迁移版本仍可能可比（口径一致但无原始响应）。跨期可比性门禁（阶段 1 已实现）消费 `comparable` 判断，不消费 `evidence_sufficient`。
 
@@ -321,27 +321,25 @@ CREATE INDEX IF NOT EXISTS idx_fcl_run ON feature_compute_log(compute_run_id);
 
 `features.config_hash` 覆盖范围：当前生效的 YAML 配置全文（config.yaml）的 SHA-256，2C 实现时填充。离线重放时验证配置一致性。
 
-### 水位推进与批次状态关联（O-4 / A4 接口约定）
+### 水位推进与采集单元（2026-10-16 替代 O-4 旧约束）
 
-2B 将修改 `update_watermark` 使其仅在 `ingest_run.status IN ('success', 'partial_failure')` 时推进水位。`status='failed'` 时不推进水位（implementation-plan.md 第 91 行）。
-
-**A4 修复——采集单元级水位控制**（2A 到 2B 接口约定，2A 在契约文档中声明）：
-- 采集单元 key = (来源, 报表, 公司, 请求范围)，每个单元记录成功/空成功/失败及尝试次数
-- 只有**完整成功单元**的版本写入与水位推进才共同提交（同一事务）；失败或部分成功的单元不写入版本、不推进该单元水位
-- `ingest_run.failed_units` 统计失败单元数；全部单元失败 → status='failed'，部分失败 → status='partial_failure'
-- 此约定确保失败批次不会伪装成成功（验收标准 4），水位只反映已持久化的成功单元
+只有完整成功财务单元的兼容 raw、版本、观察、水位和 unit 终态在同一事务提交。run 处于 running 时允许已有成功单元提交；run 最终状态根据单元结果汇总。失败单元不推进水位，合法空单元不改变水位。不能反过来要求尚未汇总的 run 最终状态作为单元提交前提。详见 [2B 执行契约](stage-2/2b-contract.md)。
 
 ---
 
-## 后续批次概要（2B-2D，待 2A 审阅通过后展开）
+## 后续批次（2B 契约已交付，2C/2D 待前序验收）
 
 ### 2B 采集层改造
-- 新建 `fin_feature/crawler/raw_store.py`：RawStore 类将每页响应保存为 gzip JSON 文件，路径 `raw/eastmoney/{run_id}/{unit_id}/{report_name}_p{page}_a{attempt}.json.gz`（A1 修复：路径含采集单元 key 和尝试标识，避免同批次不同公司同页冲突）；临时写入后原子发布（写入 .tmp 再 rename），禁止覆盖已有不同内容
-- eastmoney.py 新增 `fetch_all_with_raw` 返回 (记录列表, 原始页响应列表)，旧方法保持不变
-- CLI cmd_crawl/cmd_incremental 创建 ingest_run，采集后创建 raw_snapshot 和 statement_version
-- ingest_run 状态跟踪（success/partial_failure/failed）
-- 水位推进与批次状态关联（O-4：仅 status IN success/partial_failure 时推进水位）
-- 采集单元 key = (来源, 报表, 公司, 请求范围)，记录每个单元成功/空成功/失败及尝试；只有完整成功单元的版本写入与水位才共同提交（A4 修复）
+
+以下细化契约取代原概要的 gzip JSON、rename 覆盖风险、无行定位的二元返回值及 run 最终状态水位门禁：
+
+- [执行规则](stage-2/2b-contract.md)：每次 HTTP 尝试、响应原字节、唯一文件身份、失败证据保留、单元事务、CLI 状态。
+- [v4 数据与迁移](stage-2/2b-schema.md)：ingest_unit/ingest_attempt、快照扩展及观察行定位；仅定义待实现结构，不改已发布 2A 迁移。
+- [验收矩阵](stage-2/2b-test-matrix.md)：46 组场景，覆盖失败留存、分页完整性、崩溃对账和双入口。
+
+2B 即写版本和观察；清洗/特征仍读兼容 raw。2C 才切消费源，2D 才实现重放。证据充分性与财务可比性继续分离；内容版本的 evidence_sufficient 保留首次捕获含义，本次充分性按新观察对应的已核验快照判定。
+
+分批为 2B-1 存储/迁移/对账 → 2B-2 HTTP/分页/业务事务 → 2B-3 CLI/完整验收。每批独立送审；不得将单个子批完成标成整个 2B 验收。
 
 ### 2C 清洗与特征层改造
 - pipeline.py run_cleaning 增加 use_statement_version 参数，优先从 statement_version 读取最新非替代版本
