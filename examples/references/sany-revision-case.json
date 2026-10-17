@@ -1,0 +1,31 @@
+{
+  "schema": "public-revision-case-v1",
+  "secucode": "600031.SH",
+  "report_date": "2023-12-31",
+  "document": {
+    "url": "https://static.cninfo.com.cn/finalpage/2025-04-18/1223129214.PDF",
+    "title": "三一重工2024年年度报告",
+    "sha256": "09b21df2cef24fd85b4efa625579138241ae1de4fa7ad4f2c9fcef0c694a0d1a"
+  },
+  "page": 5,
+  "currency": "CNY",
+  "printed_unit": "thousand_yuan",
+  "scope": "consolidated",
+  "changes": [
+    {
+      "field": "total_assets",
+      "before": "151202320000",
+      "after": "151203358000"
+    },
+    {
+      "field": "parent_netprofit",
+      "before": "4527498000",
+      "after": "4527451000"
+    }
+  ],
+  "original_disclosure_date": null,
+  "revision_effective_date": null,
+  "system_switch_time": null,
+  "conclusion": "The official report explicitly supplies before/after figures; this proves a real restatement case, not provider switch timing.",
+  "note": "Do not substitute parent shareholder equity for total equity; no such substitution is included."
+}
