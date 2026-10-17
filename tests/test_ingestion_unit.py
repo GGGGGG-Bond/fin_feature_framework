@@ -682,3 +682,56 @@ class TestR7AllFinalPagesVerified:
             (version_id,),
         ).fetchone()[0]
         assert flag == 1
+
+
+class TestC2TerminalFailureNotSufficient:
+    """C2：终态失败响应（http_error/非 2xx）不能凭 valid 标志冒充充分证据。"""
+
+    def test_http_error_outcome_rejected(self, evidence_env):
+        """最终尝试 outcome=http_error、快照标 valid → 不能声明 evidence_sufficient=1。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        cap = env.capture(
+            unit, rows=rows, http_status=500, validation="valid", outcome="http_error",
+        )
+        evidence = env.evidence(unit["unit_id"], [cap])
+        with pytest.raises(ValueError, match="outcome=http_error"):
+            env.create_version(unit, cap, row_index=0, evidence=evidence)
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+
+    def test_non_success_http_status_rejected(self, evidence_env):
+        """outcome=ok 但 HTTP 500 → 不能声明充分证据。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        cap = env.capture(
+            unit, rows=rows, http_status=500, validation="valid", outcome="ok",
+        )
+        evidence = env.evidence(unit["unit_id"], [cap])
+        with pytest.raises(ValueError, match="非成功"):
+            env.create_version(unit, cap, row_index=0, evidence=evidence)
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+
+    def test_success_2xx_accepted(self, evidence_env):
+        """outcome=ok 且 HTTP 200 → 可声明充分证据（不回归）。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        cap = env.capture(unit, rows=rows, http_status=200, validation="valid", outcome="ok")
+        evidence = env.evidence(unit["unit_id"], [cap])
+        version_id = env.create_version(unit, cap, row_index=0, evidence=evidence)
+        flag = env.conn.execute(
+            "SELECT evidence_sufficient FROM statement_version WHERE version_id = ?",
+            (version_id,),
+        ).fetchone()[0]
+        assert flag == 1

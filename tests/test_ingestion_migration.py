@@ -559,3 +559,55 @@ class TestR6StructureGapColumns:
         with pytest.raises(RuntimeError, match="结构不完整"):
             run_migrations(conn)
         conn.close()
+
+
+class TestC1StructureValidationComplete:
+    """C1：v4 结构核验覆盖全部运行写入列与关键索引定义。"""
+
+    @pytest.mark.parametrize(
+        "column",
+        ["started_at", "ended_at", "failure_code", "detail"],
+    )
+    def test_missing_unit_write_column_rejected(self, tmp_path, column):
+        """ingest_unit 的运行写入列（started_at/ended_at/failure_code/detail）缺失即拒绝。"""
+        conn = get_connection(str(tmp_path / "v4.db"))
+        run_migrations(conn)
+        conn.execute(f"ALTER TABLE ingest_unit DROP COLUMN {column}")
+        conn.commit()
+
+        gaps = collect_v4_structure_gaps(conn)
+        assert any(f"ingest_unit.{column}" in g for g in gaps), column
+        with pytest.raises(RuntimeError, match="结构不完整"):
+            verify_v4_structure(conn)
+        conn.close()
+
+    def test_same_name_nonunique_index_rejected(self, tmp_path):
+        """同名普通索引冒充唯一索引 → 结构核验报告缺口。"""
+        conn = get_connection(str(tmp_path / "v4.db"))
+        run_migrations(conn)
+        # 删掉唯一索引，改建同名普通索引（错列、非唯一）
+        conn.execute("DROP INDEX uq_raw_snapshot_attempt")
+        conn.execute("CREATE INDEX uq_raw_snapshot_attempt ON raw_snapshot(run_id)")
+        conn.commit()
+
+        gaps = collect_v4_structure_gaps(conn)
+        assert any("uq_raw_snapshot_attempt" in g for g in gaps)
+        assert any("UNIQUE" in g or "列集" in g for g in gaps)
+        with pytest.raises(RuntimeError, match="结构不完整"):
+            verify_v4_structure(conn)
+        conn.close()
+
+    def test_wrong_column_index_rejected(self, tmp_path):
+        """唯一索引列集错误 → 结构核验报告缺口。"""
+        conn = get_connection(str(tmp_path / "v4.db"))
+        run_migrations(conn)
+        conn.execute("DROP INDEX uq_raw_snapshot_attempt")
+        conn.execute(
+            "CREATE UNIQUE INDEX uq_raw_snapshot_attempt ON raw_snapshot(run_id) "
+            "WHERE attempt_id IS NOT NULL"
+        )
+        conn.commit()
+
+        gaps = collect_v4_structure_gaps(conn)
+        assert any("列集" in g for g in gaps)
+        conn.close()

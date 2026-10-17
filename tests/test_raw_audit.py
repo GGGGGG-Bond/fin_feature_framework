@@ -548,7 +548,12 @@ class TestR8SuccessUnitAllFinalPagesValid:
         assert report.clean is True
 
     def test_failed_retry_page_does_not_block(self, evidence_env):
-        """历史失败重试页（非最终页）可保留，不要求其也 valid。"""
+        """历史失败重试页（非最终页）可保留，不要求其也 valid。
+
+        C4：收到 HTTP 错误响应仍必须保留原体（invalid 快照）；只有 transport_error
+        可无 snapshot。健康重试 fixture 保存真实失败响应及 invalid 快照，再断言
+        后续成功不受影响。
+        """
         env = evidence_env
         env.new_run()
         unit = env.new_unit()
@@ -560,12 +565,180 @@ class TestR8SuccessUnitAllFinalPagesValid:
                 {"success": True, "result": {"pages": 1, "count": 1, "data": rows}}
             ).encode()
 
-        # 页 1 第一次失败（http_error），第二次成功
-        failed_attempt = env.repo.register_attempt(unit["unit_id"], 1, 1)
-        env.repo.finish_attempt(failed_attempt, "http_error", error_code="500")
+        # 页 1 第一次失败（http_error），保留失败响应原体（invalid 快照）
+        failed_body = json.dumps(
+            {"success": False, "result": {"pages": 1, "count": 0, "data": []}}
+        ).encode()
+        env.capture(
+            unit, page=1, http_attempt=1, rows=[], body=failed_body,
+            http_status=500, validation="invalid", outcome="http_error",
+        )
+        # 第二次成功
         env.capture(unit, page=1, http_attempt=2, rows=rows_a, body=body(rows_a))
         env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
         env.repo.finalize_run(unit["run_id"])
 
         report = audit_raw(env.conn, env.store)
-        assert report.clean is True
+        assert report.clean is True, "保留失败响应原体后，后续成功不应被阻断"
+
+
+class TestC2AuditTerminalFailure:
+    """C2：终态失败响应仍被接受为充分版本时，对账必须报告。"""
+
+    def test_http_error_final_page_reported(self, evidence_env):
+        """HTTP 500、outcome=http_error、快照标 valid 的成功单元 → 对账非干净。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        env.capture(
+            unit, rows=rows, http_status=500, validation="valid", outcome="http_error",
+        )
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "terminal_failure_as_evidence" in audit_codes(report)
+
+    def test_non_2xx_final_page_reported(self, evidence_env):
+        """outcome=ok 但 HTTP 500 的成功单元 → 对账非干净。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        env.capture(
+            unit, rows=rows, http_status=500, validation="valid", outcome="ok",
+        )
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "terminal_failure_as_evidence" in audit_codes(report)
+
+
+class TestC3MissingDeclaredPage:
+    """C3：声明页数与实际页数不符时，对账必须报告。"""
+
+    def test_missing_middle_page_reported(self, evidence_env):
+        """声明 3 页，只有页 1 和页 3 → 对账报告缺页。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        def body(rows, pages, count):
+            return json.dumps(
+                {"success": True, "result": {"pages": pages, "count": count, "data": rows}}
+            ).encode()
+
+        env.capture(unit, page=1, rows=rows, body=body(rows, 3, 3))
+        env.capture(unit, page=3, rows=rows, body=body(rows, 3, 3))
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=2, selected_rows=2)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "missing_declared_page" in audit_codes(report)
+
+    def test_missing_tail_page_reported(self, evidence_env):
+        """声明 2 页，只有页 1 → 对账报告缺页。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        def body(rows, pages, count):
+            return json.dumps(
+                {"success": True, "result": {"pages": pages, "count": count, "data": rows}}
+            ).encode()
+
+        env.capture(unit, page=1, rows=rows, body=body(rows, 2, 2))
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "missing_declared_page" in audit_codes(report)
+
+    def test_complete_pages_clean(self, evidence_env):
+        """声明 2 页，页 1 和页 2 都在 → 对账干净（不回归）。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows_a = [{"TOTAL_OPERATE_INCOME": 100}]
+        rows_b = [{"TOTAL_OPERATE_INCOME": 200}]
+
+        def body(rows, pages, count):
+            return json.dumps(
+                {"success": True, "result": {"pages": pages, "count": count, "data": rows}}
+            ).encode()
+
+        env.capture(unit, page=1, rows=rows_a, body=body(rows_a, 2, 2))
+        env.capture(unit, page=2, rows=rows_b, body=body(rows_b, 2, 2))
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=2, selected_rows=2)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert report.clean, f"完整页应干净：{[f.code for f in report.findings]}"
+
+
+class TestC4FailedResponseEvidence:
+    """C4：历史失败尝试收到响应但未留原体 → 对账报告证据缺口。"""
+
+    def test_http_error_without_snapshot_reported(self, evidence_env):
+        """页 1 第 1 次 http_error 无 snapshot，第 2 次成功 → 对账报告证据丢失。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        def body(rows):
+            return json.dumps(
+                {"success": True, "result": {"pages": 1, "count": 1, "data": rows}}
+            ).encode()
+
+        # 第 1 次 http_error，收到响应但未保留原体（无 snapshot）
+        failed_attempt = env.repo.register_attempt(unit["unit_id"], 1, 1)
+        env.repo.finish_attempt(failed_attempt, "http_error", error_code="500")
+        # 第 2 次成功
+        env.capture(unit, page=1, http_attempt=2, rows=rows, body=body(rows))
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "failed_response_without_evidence" in audit_codes(report)
+
+    def test_transport_error_without_snapshot_clean(self, evidence_env):
+        """transport_error（无响应）无 snapshot → 对账干净（不伪造证据）。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        def body(rows):
+            return json.dumps(
+                {"success": True, "result": {"pages": 1, "count": 1, "data": rows}}
+            ).encode()
+
+        # 第 1 次 transport_error（无响应），无 snapshot
+        failed_attempt = env.repo.register_attempt(unit["unit_id"], 1, 1)
+        env.repo.finish_attempt(failed_attempt, "transport_error")
+        # 第 2 次成功
+        env.capture(unit, page=1, http_attempt=2, rows=rows, body=body(rows))
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert report.clean, f"transport_error 无响应不应报缺口：{[f.code for f in report.findings]}"
