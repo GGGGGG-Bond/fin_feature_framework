@@ -1,6 +1,6 @@
 # 金融数据处理与特征工程框架
 
-2026-10-18：官方抽查整批已随 MR 16 合入 main 6769f5e。八家公司两年96项，84项双方有效数字，32项官方参考一致、52项未查、12项来源缺失。当前批次新增[截至日查询与修订刷新](docs/stage-4.md)，保存版本的系统/公开时间视角分开，未知公告时间不回填。整体交付验收继续推进。
+0.2.0（2026-10-18）：建设计划阶段0–5的功能闭环与限定样本验收完成。干净checkout+隔离环境770项离线通过；真实接口3请求生成24条特征且24/24重放一致。八家公司96项中34项官方核查一致、50未查、12缺失。先读[交付指南](docs/delivery.md)和[验收记录](docs/acceptance.md)。
 
 > 覆盖「数据爬取 → 结构化存储 → 清洗标准化 → 特征生成 → (质量监控/增量处理/特征回测)」完整链路的可扩展框架。
 
@@ -8,15 +8,15 @@
 
 本项目面向量化投研场景，从东方财富公开数据接口爬取 A 股上市公司财务数据（利润表、资产负债表、主要财务指标），经结构化存储、清洗标准化后，生成具有金融含义的特征/因子，并提供以后续净利润同比增速为代理的分组分析。现有 CLI 子命令仍名为 `backtest`。
 
-- **数据源**：东方财富 datacenter-web API（公开 JSON 接口，无需登录）
+- **数据源**：东方财富为计算主来源；新浪独立留证核验，官方年报抽查。不同接口不自动证明底层供应商独立。
 - **存储**：SQLite（轻量、零配置、支持 SQL 按维度查询）
 - **语言**：Python 3.10+
 
 ## 当前状态（2026-10-18）
 
-阶段 1、2A、2B、2C、2D 已合入；阶段 3 已完成真实双源接线与八家公司两年采样。当前整批提交补充官方参考核查和统一汇总，32 项一致、52 未查、12 缺失，仍保留时间/修订能力边界。
+版本留证、清洗血缘、12特征、离线重放、双源小样本、截至日查询与修订刷新已接通，并提供只读运行/质量/特征覆盖报告和CSV导出。本轮MR按完整目标组织：16官方核查、17截至日/修订、18交付验收。
 
-采集已接入原始响应文件、逐次 HTTP 尝试、版本与观察血缘、单元事务和只读对账。特征输入已接入版本清洗结果，并提供当前代码下的基础离线重放；第二来源已完成固定样本采样和部分官方核查，历史时点查询基于实际保存观察提供有界选择，未知公开时间仍拒选，详见 [当前进展](docs/progress.md)。采集配置与退出码见 [2B 操作指南](docs/stage-2/2b-operations.md)，清洗、血缘与 v5 升级说明见 [2C 操作指南](docs/stage-2/2c-operations.md)。
+只对实际保存且时间可信的观察提供历史选择；生产公开修订日期未知时拒选。真实小样本部分官方核查不等于96项全数财务验收，缺失历史和未知口径不补造。边界与证据见[当前进展](docs/progress.md)。
 
 ## 文档索引
 
@@ -24,6 +24,8 @@
 
 | 文档 | 内容 | 适合谁读 |
 |------|------|----------|
+| [交付指南](docs/delivery.md) | 安装、离线/在线运行、报告与退出码 | 使用与演示 |
+| [验收记录](docs/acceptance.md) | 各阶段证据、实际计数及范围 | 审阅与交接 |
 | [阶段 1 契约](docs/stage-1/README.md) | 数据字典、12 个特征、字段权威与验收矩阵 | 实现 agent 开工与架构审阅 |
 | [docs/progress.md](docs/progress.md) | 当前状态、开发批次、验证与待办 | 协作交接与查看进展 |
 | [docs/decisions.md](docs/decisions.md) | 设计选择、备选方案、理由与边界 | 理解思考与权衡 |
@@ -38,11 +40,13 @@
 ### 1. 环境准备
 
 ```bash
-# Python 3.10+，venv 已创建于 .venv/
-.venv/bin/pip install pandas numpy requests lxml openpyxl pyyaml pytest
+# 本轮测试平台 Linux Python 3.12.3
+python3 -m venv .venv
+.venv/bin/python -m pip install -c requirements-tested.txt -e '.[dev]'
+.venv/bin/python scripts/verify_offline.py --output-dir reports/first-acceptance
 ```
 
-### 2. 端到端运行
+### 2. 可选在线运行
 
 以下采集命令会访问公开接口并写入配置数据库，首次使用先检查 [操作指南](docs/stage-2/2b-operations.md) 的范围、备份和退出码。自定义配置写在子命令前：`python -m fin_feature.cli --config /path/config.yaml crawl`。本批仅做临时库与脚本化 HTTP 验证。
 
@@ -83,7 +87,7 @@ sqlite3 data/finance.db "SELECT * FROM clean_log LIMIT 10;"
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider -m 'not requires_network'
-# 本批：738 passed，11 个联网用例未执行
+# 本批：770 passed，11 个联网用例未执行
 ```
 
 ## 目录结构
@@ -97,7 +101,7 @@ fin_feature_framework/
 ├── config.yaml                     # 主配置
 ├── pyproject.toml                  # 项目元数据与依赖
 ├── fin_feature/                    # 主包
-│   ├── cli.py                      # CLI 入口（15 个子命令）
+│   ├── cli.py                      # CLI 入口（16 个子命令）
 │   ├── config.py / constants.py
 │   ├── crawler/                    # 爬虫（反爬：频率控制+UA伪装+重试）
 │   ├── ingestion/                  # 留证请求、分页、发现与财务协调器
@@ -147,6 +151,6 @@ fin_feature_framework/
 
 完成采集留证 → 清洗 → 特征 → 重放 → 对账，输出 summary.json / replay.json。示例结果为 3 个财务单元、24 条特征、24 条重放一致、对账退出 0。重放入口与限制见 [2D 流程说明](docs/stage-2/2d-flow.md)。
 
-阶段 3 批量采样：8 家×2 年、固定分母、失败保留和旧证据复用，见 [使用说明](docs/stage-3/batch-sampling.md)。本批真实数字覆盖 74/96，尚非财务口径验收。
+阶段 3 批量采样：8 家×2 年、固定分母、失败保留和旧证据复用，见 [使用说明](docs/stage-3/batch-sampling.md)。早期采样快照74/96；当前84/96有数字、34官方参考一致，未查/缺失仍保留。
 
 金融样本映射更新：复用原体后，8 家两年双方有效数字覆盖提升至 84/96，12 项定义不同继续缺失；见 [映射说明](docs/stage-3/financial-mapping.md)。

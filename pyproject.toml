@@ -1,6 +1,6 @@
 [project]
 name = "fin-feature-framework"
-version = "0.1.0"
+version = "0.2.0"
 description = "金融数据处理与特征工程框架：爬取 → 存储 → 清洗 → 特征 → 回测"
 requires-python = ">=3.10"
 dependencies = [
@@ -11,6 +11,9 @@ dependencies = [
     "openpyxl>=3.1",
     "pyyaml>=6.0",
 ]
+
+[project.scripts]
+fin-feature = "fin_feature.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]

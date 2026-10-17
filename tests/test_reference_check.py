@@ -119,3 +119,13 @@ def test_bad_document_units_or_wrong_conversion_rejected(tmp_path,unit,printed):
     p=setup_files(tmp_path)
     edit(p[2],lambda d:d['records'][0].update(document_unit=unit,document_value=printed))
     with pytest.raises(ValueError):check_reference(*p)
+
+
+def test_thousand_yuan_printed_unit_is_converted_exactly(tmp_path):
+    paths=setup_files(tmp_path)
+    def declare(ref):
+        ref['records'][0].update(document_unit='thousand_yuan',document_value='0.1')
+    edit(paths[2],declare)
+    assert check_reference(*paths)['counts']=={'match_reference':1}
+    edit(paths[2],lambda ref:ref['records'][0].update(document_value='0.2'))
+    with pytest.raises(ValueError,match='conversion'):check_reference(*paths)

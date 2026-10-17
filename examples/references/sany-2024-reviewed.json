@@ -1,0 +1,50 @@
+{
+  "schema": "reviewed-reference-v1",
+  "coverage": "selected-fields",
+  "reviewed_by": "gezhijie / Codex manual PDF page review 2026-10-18",
+  "document": {
+    "url": "https://static.cninfo.com.cn/finalpage/2025-04-18/1223129214.PDF",
+    "title": "三一重工2024年年度报告",
+    "sha256": "09b21df2cef24fd85b4efa625579138241ae1de4fa7ad4f2c9fcef0c694a0d1a"
+  },
+  "input_sha256": [
+    "228e2bc7ad260eb05b80f468f505e1d351a19226132e6dbd9a52568ee182e484",
+    "2ccc263c2c996aed234fa430a005b84afe949b1082be20323f8e6acb1710d2c2"
+  ],
+  "currency": "CNY",
+  "unit": "yuan",
+  "scope": "consolidated",
+  "source_units": {
+    "eastmoney": "yuan",
+    "sina": "yuan"
+  },
+  "absolute_tolerance": "0.01",
+  "records": [
+    {
+      "secucode": "600031.SH",
+      "report_date": "2023-12-31",
+      "field": "total_assets",
+      "value": "151203358000",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 5,
+      "row_label": "总资产",
+      "column_label": "2023年 调整后",
+      "document_value": "151203358",
+      "document_unit": "thousand_yuan"
+    },
+    {
+      "secucode": "600031.SH",
+      "report_date": "2023-12-31",
+      "field": "parent_netprofit",
+      "value": "4527451000",
+      "table_type": "IS",
+      "period_basis": "flow_ytd",
+      "page": 5,
+      "row_label": "归属于上市公司股东的净利润",
+      "column_label": "2023年 调整后",
+      "document_value": "4527451",
+      "document_unit": "thousand_yuan"
+    }
+  ]
+}
