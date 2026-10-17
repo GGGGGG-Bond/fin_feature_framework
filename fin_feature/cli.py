@@ -355,6 +355,12 @@ def main() -> None:
     rr.add_argument("--document", required=True, help="已保存且哈希匹配的官方年报 PDF")
     from fin_feature.reference_check import cmd_reference_check
 
+    rb = sub.add_parser("review-batch", help="重核样本证据并汇总官方年报抽查覆盖")
+    rb.add_argument("--batch-dir", required=True)
+    rb.add_argument("--reviews", required=True, help="reference-review-plan-v1 JSON")
+    rb.add_argument("--output-dir", required=True, help="必须不存在的新目录")
+    from fin_feature.review_batch import cmd_review_batch
+
     args = parser.parse_args()
 
     commands = {
@@ -362,6 +368,7 @@ def main() -> None:
         "clean": cmd_clean,
         "features": cmd_features,
         "sample-batch": cmd_sample_batch,
+        "review-batch": cmd_review_batch,
         "quality": cmd_quality,
         "incremental": cmd_incremental,
         "backtest": cmd_backtest,
