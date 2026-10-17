@@ -157,3 +157,14 @@
 **非阻断 H1（2B-2 前须修）**：`create_statement_version` 两处 `_record_observation` 未传 `observed_at`，观察时间落到 `datetime(now,localtime)` 而非实际接收 UTC——2B-2 接 HTTP 时一并修。
 
 **验证办法**：全量离线 369 项通过（原 343 + R1-R8 整改回归 26 项）；反例脚本 R1/R2/R3/R4/R6/R7/R8 均按预期抛错，R5 反例为假阳性（monkeypatch 不触发，已用直接探针验证真实竞争被阻断）。
+
+### 2B-1 复审整改记录（实现 agent，2026-10-17；状态：待复审）
+
+复审对送审头 `e3d03f7` 确认 R1-R8 全部关闭，但扩展检查发现 1 项 P1 + 3 项 P2（C1-C4），整改选择如下（审阅材料：分支 `docs/review-stage2b1-e3d03f7`，commit `5550052`）：
+
+1. **C1 结构核验覆盖全部运行写入列与索引定义**：`V4_INGEST_UNIT_REQUIRED_COLUMNS` 补 `started_at`/`ended_at`/`failure_code`/`detail`；新增 `V4_REQUIRED_INDEX_SPECS` 与 `_index_definition`，`collect_v4_structure_gaps` 逐索引查 unique 标志、列集与部分条件。理由：R6 只补了举出的一个字段，同名非唯一索引冒充唯一索引也未识别；结构核验应在初始化时报清楚缺口，而非在采集途中失败或丢失约束。
+2. **C2 终态失败响应不能凭 valid 标志冒充充分证据**：`_verify_unit_evidence` 与 `_check_unit_evidence` 都检查最终尝试 `outcome=ok` 且 HTTP 2xx；http_error 等终态失败即使文件有效、快照标 valid 也拒绝/报告。理由：原文件有效不代表这是成功响应；矛盾数据必须在此拒绝，不只指望协调器不生成。
+3. **C3 成功财务单元核对声明页数与连续页号**：`_check_unit_evidence` 解析每页原体信封（pages/count），核对各页声明总页数一致、页号从 1 连续、合计行数等于声明 count；缺页报 `missing_declared_page`。理由：`final_by_page` 仅由已有 attempt 构造，不知道声明页数，缺中间页/尾页仍报干净。
+4. **C4 区分"最终页成功完整"与"每次收到响应留证据"**：`_check_attempts` 对非最终 http_error/business_error/decode_error/schema_error/storage_error 缺快照报 `failed_response_without_evidence`；transport_error 可无 snapshot。理由：R8 改动对所有非最终尝试直接 continue，把收到 HTTP 4xx/5xx 但未留原体的证据丢失也静默豁免；契约允许历史失败重试页 invalid，但收到响应必须留证据。
+
+**验证办法**：全量离线 385 项通过（R1-R8 回归 26 + C1-C4 回归 16）；反例脚本 R1-R8 全部关闭，C1-C4 均按预期抛错（缺陷被阻断）。

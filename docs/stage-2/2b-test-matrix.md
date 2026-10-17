@@ -123,3 +123,21 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I docs/reviews/stage2b-1-b8b2b3f-rep
 | R8 | P2 | `test_raw_audit.py::TestR8SuccessUnitAllFinalPagesValid`（pending 最终页报告、invalid 最终页报告、全 valid 干净、失败重试页不阻断） |
 
 反例脚本结果：R1/R2/R3/R4/R6/R7/R8 均按预期抛错；R5 反例为假阳性（monkeypatch `sqlite3.connect` 拦截对 `target` 的连接，但整改改为私有临时 + `os.link`，从不直接连接 `target`，故不触发；已用直接探针验证真实竞争被阻断）。
+
+## 2B-1 复审整改映射（实现 agent 记录，2026-10-17；待复审）
+
+固定送审头 `e3d03f7`，整改在 `feat/stage2b-1` 继续提交。审阅材料：分支 `docs/review-stage2b1-e3d03f7`（commit `5550052`）。命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider -m 'not requires_network'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:$PWD/tests" .venv/bin/python -I docs/reviews/stage2b-1-e3d03f7-repro.py
+```
+
+| 编号 | 级别 | 整改用例位置 |
+|---|---|---|
+| C1 | P2 | `test_ingestion_migration.py::TestC1StructureValidationComplete`（缺 started_at/ended_at/failure_code/detail 拒绝、同名非唯一索引拒绝、错列索引拒绝） |
+| C2 | P1 | `test_ingestion_unit.py::TestC2TerminalFailureNotSufficient`（http_error 拒绝、非 2xx 拒绝、2xx 接受）；`test_raw_audit.py::TestC2AuditTerminalFailure`（http_error 报告、非 2xx 报告） |
+| C3 | P2 | `test_raw_audit.py::TestC3MissingDeclaredPage`（缺中间页报告、缺尾页报告、完整页干净） |
+| C4 | P2 | `test_raw_audit.py::TestC4FailedResponseEvidence`（http_error 无 snapshot 报告、transport_error 无 snapshot 干净） |
+
+反例脚本结果：R1-R8 原反例全部关闭（返回 result）；C1-C4 均按预期抛错（缺陷被阻断）。脚本末尾 `assert not any('probe_error'...)` 失败是预期——脚本把"无 probe_error"当作"缺陷仍存在"，C1-C4 现在正确抛错说明缺陷已修复。
