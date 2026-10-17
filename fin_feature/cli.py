@@ -330,6 +330,13 @@ def main() -> None:
     scope.add_argument("--result-id", help="重放一条不可变计算结果")
     scope.add_argument("--compute-run-id", help="重放一个计算批次")
 
+    rc = sub.add_parser("reconcile", help="离线核验两份来源数据，JSON 报告输出到 stdout")
+    rc.add_argument("--left", required=True, help="主来源 reconcile-v1 JSON")
+    rc.add_argument("--right", required=True, help="第二来源 reconcile-v1 JSON")
+    rc.add_argument("--abs-tol", default="1", help="金额绝对容差，标准元，默认 1")
+    rc.add_argument("--rel-tol", default="0.000001", help="相对容差，默认 0.000001")
+    from fin_feature.reconcile import cmd_reconcile
+
     args = parser.parse_args()
 
     commands = {
@@ -341,6 +348,7 @@ def main() -> None:
         "backtest": cmd_backtest,
         "audit-raw": cmd_audit_raw,
         "replay": cmd_replay,
+        "reconcile": cmd_reconcile,
     }
     result = commands[args.command](args)
     # 传播退出码（None 视为成功）
