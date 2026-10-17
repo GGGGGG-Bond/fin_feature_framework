@@ -173,13 +173,16 @@ def test_public_fact_demo_is_portable_and_not_vendor_raw(tmp_path,monkeypatch):
     conn.close()
 
 
-def test_public_fixture_tampering_is_rejected_before_output(tmp_path,monkeypatch):
+@pytest.mark.parametrize('kind',['amount','currency','link'])
+def test_public_fixture_tampering_is_rejected_before_output(tmp_path,monkeypatch,kind):
     from examples import public_flow
     payload=json.loads(public_flow.FIXTURE.read_bytes())
-    payload['records'][0]['value']='999999'
+    if kind=='amount':payload['records'][0]['value']='999999'
+    elif kind=='currency':payload['currency']='USD'
+    else:payload['records'][0]['document_url']='https://example.test/wrong.pdf'
     altered=tmp_path/'altered.json';altered.write_text(json.dumps(payload))
     monkeypatch.setattr(public_flow,'FIXTURE',altered)
-    with pytest.raises(ValueError,match='differ from pinned'):
+    with pytest.raises(ValueError,match='differ'):
         public_flow.run_public_demo(tmp_path/'must-not-exist')
     assert not (tmp_path/'must-not-exist').exists()
 

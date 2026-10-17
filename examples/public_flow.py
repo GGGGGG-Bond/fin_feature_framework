@@ -29,6 +29,9 @@ def load_public_fixture(path):
     fixture=json.loads(Path(path).read_bytes())
     if fixture.get('schema')!='public-financial-fixture-v1' or len(fixture.get('records',[]))!=32:
         raise ValueError('unexpected reviewed public fixture')
+    if (fixture.get('currency')!='CNY' or fixture.get('amount_unit')!='yuan'
+            or fixture.get('consolidate_scope')!='consolidated' or fixture.get('provider_payload') is not False):
+        raise ValueError('public fixture currency/unit/scope or response identity differs')
     root=Path(__file__).resolve().parents[1]
     documents=fixture.get('documents',[])
     hashes={doc['sha256'] for doc in documents}
@@ -44,6 +47,8 @@ def load_public_fixture(path):
         reviewed=json.loads(body)
         if doc['sha256']!=reviewed['document']['sha256'] or doc['url']!=reviewed['document']['url']:
             raise ValueError('public document identity differs')
+        if any(row.get('document_url')!=doc['url'] for row in fixture['records'] if row['document_sha256']==doc['sha256']):
+            raise ValueError('public fact document link differs')
         frozen=[{k:v for k,v in row.items() if k not in ('document_sha256','document_url')}
                 for row in fixture['records'] if row['document_sha256']==doc['sha256']]
         encoded=lambda rows:sorted(json.dumps(row,sort_keys=True,ensure_ascii=False) for row in rows)

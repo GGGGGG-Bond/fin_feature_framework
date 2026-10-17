@@ -32,6 +32,8 @@ def _review(path):
     if (not isinstance(counts, dict) or any(type(v) is not int or v < 0 for v in counts.values())
             or sum(counts.values()) != planned or counts.get('match_reference', 0) != matched):
         raise ValueError('review status counts disagree with fixed denominator')
+    if checked != sum(counts.get(key,0) for key in ('match_reference','difference_reference','missing')):
+        raise ValueError('review checked count disagrees with field statuses')
     return dict(sha256=hashlib.sha256(body).hexdigest(), schema=payload['schema'],
                 **dict(zip(keys, values)), counts=payload.get('counts', {}),
                 supplied_snapshot_date=payload.get('snapshot_date'),
