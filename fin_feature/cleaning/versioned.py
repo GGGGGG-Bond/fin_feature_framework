@@ -7,7 +7,7 @@ import math
 from fin_feature.cleaning.pipeline import CLEAN_FIELDS, CleanStats
 from fin_feature.cleaning import rules
 from fin_feature.storage.hashing import canonical_json, compute_metric_hash, compute_semantic_hash
-from fin_feature.utils.date_utils import get_disclosure_status, get_report_type
+from fin_feature.utils.date_utils import get_disclosure_status, get_report_type, normalize_date
 from fin_feature.storage.clean_model import CLEAN_RESULT_COLUMNS
 
 TABLE_TYPES = ('financial_indicator', 'income_statement', 'balance_sheet')
@@ -55,6 +55,9 @@ def current_versions(repo):
         'ORDER BY secucode, report_date, table_type')]
     seen = set()
     for row in rows:
+        date = row['report_date']
+        if normalize_date(date) != date or date[5:] not in ('03-31','06-30','09-30','12-31'):
+            raise ValueError('statement report_date must be a normalized quarter end')
         key = (row['secucode'], row['report_date'], row['table_type'])
         if row['table_type'] not in TABLE_TYPES or key in seen:
             raise ValueError('non-unique or unsupported current statement group')

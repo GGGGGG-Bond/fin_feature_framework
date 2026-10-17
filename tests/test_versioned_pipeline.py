@@ -312,6 +312,15 @@ def test_c12_stale_or_corrupt_inputs_fail_before_any_output(repo, cause):
     assert rows(repo, 'feature_compute_log') == before
 
 
+@pytest.mark.parametrize('invalid_date', ['2025-03-01', '2025/03/31'])
+def test_c12_report_period_must_be_normalized_quarter_end(repo, invalid_date):
+    seed(repo, date=invalid_date)
+    with pytest.raises(ValueError, match='quarter end'):
+        clean(repo)
+    assert rows(repo,'clean_statement') == []
+    assert rows(repo,'clean_selection') == []
+
+
 @pytest.mark.parametrize('boundary', ['log', 'projection', 'commit'])
 def test_c13_compute_failures_are_atomic_after_reconnect(repo, db, monkeypatch, boundary):
     seed(repo); clean(repo); compute(repo)
