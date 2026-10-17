@@ -175,3 +175,20 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:$PWD/tests" .venv/bin/python -I docs/
 | E3 | P2 | `test_raw_audit.py::TestE3StrictEnvelopeValidation`（success=false 报告、缺 data 报告、bool 页数拒绝、混合 count 行数不一致、多余页报告） |
 
 反例脚本结果：R1-R8/C1-C4/D1-D3 原反例全部关闭（返回 result）；E1-E3 均按预期抛错（缺陷被阻断）。脚本末尾 `assert not any('probe_error'...)` 失败是预期——E1-E3 现在正确抛错说明缺陷已修复。
+
+## 2B-1 声明范围与原体一致性复审整改映射（实现 agent 记录，2026-10-17；待复审）
+
+固定送审头 `2b86e07`，整改在 `feat/stage2b-1` 继续提交。审阅材料：分支 `docs/review-stage2b1-2b86e07`（commit `6ea6bf7`）。命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider -m 'not requires_network'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:$PWD/tests" .venv/bin/python -I docs/reviews/stage2b-1-2b86e07-repro.py
+```
+
+| 编号 | 级别 | 整改用例位置 |
+|---|---|---|
+| F1 | P1 | `test_ingestion_unit.py::TestF1ProofCoversDeclaredRange`（源端声明两页只登记一页拒绝、全声明范围接受、合法空单页不误拒）；`TestF2F3WritePathUsesBody`（写入路径共用原体结果：pages=0 非空拒绝、count 与原体行数不符拒绝、非对象元素拒绝、record_count 与原体不符拒绝） |
+| F2 | P2 | `test_raw_audit.py::TestF2LegalEmptyCombination`（pages=0 非空报告、多页首空报告、非首空报告、合法空干净） |
+| F3 | P2 | `test_raw_audit.py::TestF3BodyRowCountAndObjectElements`（原体长度 vs metadata 报告、财务非对象报告、股票非对象报告） |
+
+反例脚本结果：R1-R8/C1-C4/D1-D3/E1-E3 原反例全部关闭（返回 result）；F1-F3 共 7 组反例（F1、F2a/b/c、F3a/b/c）均按预期抛错（缺陷被阻断）。脚本末尾 `assert not any('probe_error'...)` 失败是预期——F1-F3 现在正确抛错说明缺陷已修复。共享解析器：`fin_feature/storage/envelope.py`（`ParsedEnvelope`/`parse_envelope`），写入路径与只读对账消费同一份解析结果。

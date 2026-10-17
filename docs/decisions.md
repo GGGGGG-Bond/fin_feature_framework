@@ -188,3 +188,13 @@
 3. **E3 严格信封校验**：`success` 必须严格为 `True`（`is not True`）；`result.data` 必须存在且为列表；`pages`/`count` 用 `_is_int_not_bool` 排除 bool（bool 是 int 子类）；`_check_page_completeness` 既查缺页也查多余页（`extra_page_outside_declared_range`）；混合 count 处理改为"一旦某页出现有效 count，所有已出现 count 必须一致且完整范围实际总行数必须匹配"（不再要求每页都提供才检查）。理由：原实现 `success=false`、缺 `data`、bool 页数、混合 count 跳过总检查、多余页等情况都能对账成功。
 
 **验证办法**：全量离线 406 项通过（R1-R8 回归 26 + C1-C4 回归 16 + D1-D3 回归 10 + E1-E3 回归 11）；反例脚本 R1-R8/C1-C4/D1-D3 全部关闭，E1-E3 均按预期抛错（缺陷被阻断）。
+
+### 2B-1 声明范围与原体一致性复审整改记录（实现 agent，2026-10-17；状态：待复审）
+
+声明范围与原体一致性复审对送审头 `2b86e07` 确认 R1-R8/C1-C4/D1-D3/E1-E3 全部关闭，但扩展检查发现 1 项 P1 + 2 项 P2（F1-F3），整改选择如下（审阅材料：分支 `docs/review-stage2b1-2b86e07`，commit `6ea6bf7`）：
+
+1. **F1 证明覆盖源端声明范围**：写入路径 `_verify_unit_evidence` 从已核验原体解析每页信封，取得源端声明 `pages`；证明页集合必须等于声明范围 `[1, declared_pages]`，而不仅等于已登记 attempt 页集合。理由：E1 只看数据库已登记页——源端声明两页、采集只登记第一页时，`proof_pages` 与 `expected_pages` 都是 `{1}`，接口仍写入 `evidence_sufficient=1` 版本，虽然原体已证明整个请求范围未取完。已登记集合不是应有范围。
+2. **F2 合法空是组合条件**：共享解析器计算 `is_legal_empty`（仅第一页、pages 为 0 或 1、data=[]、count 为 0 或缺失）；`pages=0` 非空、多页首空、非首空一律诊断失败；合法空不再提前跳过数据/计数核对。理由：E2 只放宽了 pages=0 的下界，没验证空的必要条件——pages=0/count=1/data 非空、多页早空/非首空都被对账判为干净。
+3. **F3 原体内容取代 metadata 自述计数**：实际行数取原体 `len(data)`/`len(diff)`，逐页与 `snapshot.record_count` 对照，再用于单元总数一致性检查；财务与股票发现的每个元素必须为对象。写入路径与只读对账共用同一份 `ParsedEnvelope` 结果（新增 `fin_feature/storage/envelope.py`），Repository 消费结果拒绝不完整写入，audit 消费同规则输出只读诊断。理由：原实现计算了 `data_rows` 却仍用 metadata 的 `record_count` 汇总——原体两行、metadata 一行时 `count` 与 `record_count` 两个相同错误值互相作证；`data=[7]`/`diff=[7]` 非对象元素也被接受。
+
+**验证办法**：全量离线 420 项通过（R1-R8 回归 26 + C1-C4 回归 16 + D1-D3 回归 10 + E1-E3 回归 11 + F1-F3 回归 14）；反例脚本 R1-R8/C1-C4/D1-D3/E1-E3 全部关闭，F1-F3 共 7 组反例均按预期抛错（缺陷被阻断）。
