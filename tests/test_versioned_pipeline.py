@@ -215,8 +215,13 @@ def test_c07_drop_invalidates_comparison_period_projections_but_preserves_logs(r
 def test_c08_clean_failure_is_atomic_after_reconnect(repo, db, monkeypatch, boundary):
     seed(repo); clean(repo); compute(repo)
     tables = ['clean_statement', 'clean_selection', 'clean_financial_indicator', 'features', 'clean_log']
-    before = {t: rows(repo, t) for t in tables}
+    history = rows(repo, 'clean_statement')
     seed(repo, weightavg_roe=20)
+    # Stage4 invalidates current outputs in the revision's own committed UoW.
+    assert rows(repo, 'features') == []
+    assert rows(repo, 'clean_financial_indicator') == []
+    assert rows(repo, 'clean_statement') == history
+    before = {t: rows(repo, t) for t in tables}
     if boundary == 'projection':
         original = repo.upsert_clean
         def fail(*args):
