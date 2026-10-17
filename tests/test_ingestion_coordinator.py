@@ -1068,3 +1068,74 @@ def test_r3_cross_batch_mixed_format_matches_stage1(tmp_path):
     assert current_income(env) == expected
     assert phase1_selection_income(env) == expected
     env.conn.close()
+
+@pytest.mark.parametrize("entry_shape", ["null", "absent", "empty"])
+def test_r2_missing_entry_keeps_full_historical_selection_evidence(
+    evidence_env, entry_shape
+):
+    """A missing field in a later response must not erase known selection evidence."""
+    env = evidence_env
+    clock = StepClock()
+    known = fi_row(income=200.0, entry_time="2024-04-20 18:00:00")
+    unknown = fi_row(income=1.0, entry_time=None)
+    if entry_shape == "absent":
+        unknown.pop("EITIME")
+    elif entry_shape == "empty":
+        unknown["EITIME"] = ""
+
+    assert run_batch(env, [known], clock=clock).status == "success"
+    result = run_batch(env, [unknown], clock=clock)
+    assert result.status == "success"
+    assert result.units[0].compat_writes == 0
+
+    raw = env.conn.execute("SELECT * FROM raw_financial_indicator").fetchone()
+    assert raw["total_operate_income"] == 200.0
+    assert raw["entry_time"] == "2024-04-20 18:00:00"
+    assert raw["weightavg_roe"] == 16.75
+    assert phase1_selection_income(env) == current_income(env) == 200.0
+    assert len(version_rows(env.conn)) == 2
+    assert len(observation_rows(env.conn)) == 2
+
+    unknown_version = next(
+        row for row in version_rows(env.conn)
+        if json.loads(row["standardized_fields"])["total_operate_income"] == 1
+    )
+    original_fields = json.loads(unknown_version["raw_fields"])
+    assert original_fields.get("entry_time") in (None, "")
+    unknown_observation = env.repo.get_observations_for_version(
+        unknown_version["version_id"]
+    )[0]
+    assert unknown_observation["entry_time"] is None
+    snapshot = env.repo.get_snapshot(unknown_observation["snapshot_id"])
+    preserved_body = env.store.verify({
+        "file_path": snapshot["file_path"],
+        "raw_hash": snapshot["raw_content_hash"],
+        "raw_bytes": snapshot["raw_bytes"],
+    }).body
+    assert preserved_body == body_for([unknown], count=1)
+
+    # A later explicit revision can still win; another unknown observation cannot.
+    newer = fi_row(income=300.0, entry_time="2024-04-20 20:00:00")
+    assert run_batch(env, [newer], clock=clock).status == "success"
+    repeat = run_batch(env, [unknown], clock=clock)
+    assert repeat.status == "success"
+    assert repeat.units[0].compat_writes == 0
+    assert repeat.units[0].new_versions == 0
+    assert phase1_selection_income(env) == current_income(env) == 300.0
+    assert count_rows(env.conn, "raw_financial_indicator") == 1
+    assert len(version_rows(env.conn)) == 3
+    assert len(observation_rows(env.conn)) == 4
+    assert_observed_matches_received(env.conn)
+    assert not env.conn.in_transaction
+
+    # Confirm the preserved winning row is committed, not only visible on the writer.
+    filename = env.conn.execute("PRAGMA database_list").fetchone()[2]
+    reader = sqlite3.connect(filename)
+    reader.row_factory = sqlite3.Row
+    try:
+        persisted = reader.execute("SELECT * FROM raw_financial_indicator").fetchone()
+        assert persisted["total_operate_income"] == 300.0
+        assert persisted["entry_time"] == "2024-04-20 20:00:00"
+        assert persisted["weightavg_roe"] == 16.75
+    finally:
+        reader.close()

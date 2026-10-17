@@ -215,7 +215,9 @@ class Repository:
                      incoming.get("notice_date")),
                 ).fetchone()
                 if existing_row is not None:
-                    existing = {c: existing_row[c] for c in cols}
+                    # Keep historical selection evidence even when the new response
+                    # omits that field. Incoming columns describe only the new row.
+                    existing = dict(existing_row)
                     if _selection_sort_key(existing) > _selection_sort_key(incoming):
                         # 后续批次只带回同公告日的较旧记录：保留既有当前行
                         continue
