@@ -857,3 +857,145 @@ class TestE1ProofCoversAllFinalPages:
         with pytest.raises(ValueError, match="未精确覆盖全部最终页"):
             env.create_version(unit, page1, row_index=0, evidence=evidence)
         assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+
+
+class TestF1ProofCoversDeclaredRange:
+    """F1：证明必须覆盖源端声明的全部页范围，不能只覆盖已登记页。
+
+    源端声明两页，但只登记第一页，仍能写入充分证据版本——这是缺陷。
+    修复后：从已核验原体取得源端声明 pages，proof 页必须等于声明范围。
+    """
+
+    def test_unregistered_declared_page_rejected(self, evidence_env):
+        """页 1 原体声明 pages=2，但只登记页 1（无页 2 attempt）→ 拒绝。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"SECUCODE": "000001.SZ", "REPORT_DATE": "2024-03-31",
+                 "TOTAL_OPERATE_INCOME": 100}]
+
+        def body(rows, pages, count):
+            return json.dumps(
+                {"success": True, "result": {"pages": pages, "count": count, "data": rows}}
+            ).encode()
+
+        page1 = env.capture(unit, page=1, rows=rows, body=body(rows, 2, 2))
+        # 只登记页 1，未登记页 2——原体已声明整个请求范围未取完
+        evidence = env.evidence(unit["unit_id"], [page1])
+        with pytest.raises(ValueError, match="未覆盖源端声明的全部页范围"):
+            env.create_version(unit, page1, row_index=0, evidence=evidence)
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+
+    def test_full_declared_range_accepted(self, evidence_env):
+        """页 1 声明 pages=2，登记页 1 和页 2，证明覆盖全部 → 接受。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows_a = [{"TOTAL_OPERATE_INCOME": 100}]
+        rows_b = [{"TOTAL_OPERATE_INCOME": 200}]
+
+        def body(rows, pages, count):
+            return json.dumps(
+                {"success": True, "result": {"pages": pages, "count": count, "data": rows}}
+            ).encode()
+
+        page1 = env.capture(unit, page=1, rows=rows_a, body=body(rows_a, 2, 2))
+        page2 = env.capture(unit, page=2, rows=rows_b, body=body(rows_b, 2, 2))
+        evidence = env.evidence(unit["unit_id"], [page1, page2])
+        version_id = env.create_version(unit, page1, row_index=0, evidence=evidence)
+        flag = env.conn.execute(
+            "SELECT evidence_sufficient FROM statement_version WHERE version_id = ?",
+            (version_id,),
+        ).fetchone()[0]
+        assert flag == 1
+
+    def test_legal_empty_single_page_accepted(self, evidence_env):
+        """页 1 声明 pages=0（合法空），证明只含页 1 → 声明范围检查通过。
+
+        合法空无数据行，不能写业务版本；验证 F1 声明范围检查不拒绝合法空单页证明
+        （到达行定位核验器而非声明范围检查即表示 F1 通过）。
+        """
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        body = json.dumps(
+            {"success": True, "result": {"pages": 0, "count": 0, "data": []}}
+        ).encode()
+        page1 = env.capture(unit, rows=[], body=body)
+        evidence = env.evidence(unit["unit_id"], [page1])
+        # 合法空无数据行，行定位核验器拒绝 row_index=0（空列表无行可定位）；
+        # 但这发生在 F1 声明范围检查之后——证明 F1 不拒绝合法空单页证明
+        with pytest.raises(ValueError, match="行定位与传入值不一致"):
+            env.create_version(unit, page1, row_index=0, evidence=evidence)
+
+
+class TestF2F3WritePathUsesBody:
+    """F2/F3：写入路径与 audit 共用原体解析结果，拒绝不完整/矛盾证据。"""
+
+    def _env_unit(self, env):
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        return unit
+
+    def test_zero_pages_nonempty_body_rejected(self, evidence_env):
+        """F2：pages=0 但 data 非空 → 写入拒绝。"""
+        env = evidence_env
+        unit = self._env_unit(env)
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+        body = json.dumps(
+            {"success": True, "result": {"pages": 0, "count": 1, "data": rows}}
+        ).encode()
+        page1 = env.capture(unit, rows=rows, body=body)
+        evidence = env.evidence(unit["unit_id"], [page1])
+        with pytest.raises(ValueError, match="不满足合法空条件"):
+            env.create_version(unit, page1, row_index=0, evidence=evidence)
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+
+    def test_count_mismatch_body_rows_rejected(self, evidence_env):
+        """F3：原体两行但 count=1 → 写入拒绝。"""
+        env = evidence_env
+        unit = self._env_unit(env)
+        actual = [{"TOTAL_OPERATE_INCOME": 100}, {"TOTAL_OPERATE_INCOME": 200}]
+        body = json.dumps(
+            {"success": True, "result": {"pages": 1, "count": 1, "data": actual}}
+        ).encode()
+        page1 = env.capture(unit, rows=actual, body=body)
+        evidence = env.evidence(unit["unit_id"], [page1])
+        with pytest.raises(ValueError, match="原体行数合计"):
+            env.create_version(unit, page1, row_index=0, evidence=evidence)
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+
+    def test_non_object_row_rejected(self, evidence_env):
+        """F3：原体 data 含非对象元素 → 写入拒绝。"""
+        env = evidence_env
+        unit = self._env_unit(env)
+        body = json.dumps(
+            {"success": True, "result": {"pages": 1, "count": 1, "data": [7]}}
+        ).encode()
+        page1 = env.capture(unit, rows=[7], body=body)
+        evidence = env.evidence(unit["unit_id"], [page1])
+        with pytest.raises(ValueError, match="非对象元素"):
+            env.create_version(
+                unit, page1, row_index=0, evidence=evidence,
+                standardized={"total_operate_income": 100},
+            )
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+
+    def test_metadata_record_count_mismatch_rejected(self, evidence_env):
+        """F3：原体行数与 snapshot.record_count 不一致 → 写入拒绝。"""
+        env = evidence_env
+        unit = self._env_unit(env)
+        metadata = [{"TOTAL_OPERATE_INCOME": 100}]
+        actual = metadata + [{"TOTAL_OPERATE_INCOME": 200}]
+        body = json.dumps(
+            {"success": True, "result": {"pages": 1, "count": 2, "data": actual}}
+        ).encode()
+        page1 = env.capture(unit, rows=metadata, body=body)
+        evidence = env.evidence(unit["unit_id"], [page1])
+        with pytest.raises(ValueError, match="record_count"):
+            env.create_version(unit, page1, row_index=0, evidence=evidence)
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
