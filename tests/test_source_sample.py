@@ -114,3 +114,63 @@ def test_confirmed_broker_parent_profit_title_alias():
         if item['item_field']=='PARENETP':item['item_title']='归属于母公司的净利润'
     rows=map_sina(json.dumps(doc),'600030.SH',['2024-12-31'],'IS','evidence')
     assert next(r for r in rows if r['field']=='parent_netprofit')['value']=='100.00'
+
+
+@pytest.mark.parametrize('field,code,title',[
+    ('total_equity','TOTSHAREQUI','股东权益'),
+    ('total_equity','TOTSHAREQUI','所有者权益合计'),
+    ('total_equity','TOTALOWNEREQUI','所有者权益合计'),
+    ('parent_netprofit','NETPARECOMPPROF','归属于母公司的净利润'),
+    ('parent_netprofit','NETPARESHARPROF','归属于母公司的净利润'),
+])
+def test_financial_exact_alternatives_preserve_semantics(field,code,title):
+    from fin_feature.source_sample import SINA_FIELDS,FIELDS
+    table=FIELDS[field][0];doc=sina(table)
+    for item in doc['result']['data']['report_list']['20241231']['data']:
+        if item['item_field']==SINA_FIELDS[field][0]:item.update(item_field=code,item_title=title)
+    rows=map_sina(json.dumps(doc),'600036.SH',['2024-12-31'],table,'evidence')
+    row=next(r for r in rows if r['field']==field)
+    assert row['value']=='100.00' and row['source_field']==code and row['source_label']==title
+    assert row['mapping_version']=='source-sample-v2'
+    assert row['unit']=='unknown' and row['comparison_basis_id']=='unknown'
+
+
+@pytest.mark.parametrize('field,code',[('total_equity','TOTSHAREQUI'),('parent_netprofit','NETPARECOMPPROF')])
+def test_financial_alias_wrong_title_rejected(field,code):
+    from fin_feature.source_sample import SINA_FIELDS,FIELDS
+    table=FIELDS[field][0];doc=sina(table)
+    for item in doc['result']['data']['report_list']['20241231']['data']:
+        if item['item_field']==SINA_FIELDS[field][0]:item.update(item_field=code,item_title='different definition')
+    with pytest.raises(ValueError,match='title changed'):
+        map_sina(json.dumps(doc),'600036.SH',['2024-12-31'],table,'evidence')
+
+
+@pytest.mark.parametrize('field,code,title',[
+    ('total_equity','TOTSHAREQUI','股东权益'),
+    ('parent_netprofit','NETPARECOMPPROF','归属于母公司的净利润')])
+def test_multiple_semantic_candidates_rejected_even_equal(field,code,title):
+    from fin_feature.source_sample import FIELDS
+    table=FIELDS[field][0];doc=sina(table)
+    doc['result']['data']['report_list']['20241231']['data'].append(
+        dict(item_field=code,item_title=title,item_value='100.00'))
+    with pytest.raises(ValueError,match='ambiguous'):
+        map_sina(json.dumps(doc),'600036.SH',['2024-12-31'],table,'evidence')
+
+
+@pytest.mark.parametrize('field,replacement,title',[
+    ('total_operate_income','BIZINCO','营业收入'),('operate_cost','OTHERBIZCOST','其他业务成本')])
+def test_financial_revenue_cost_are_not_substituted(field,replacement,title):
+    from fin_feature.source_sample import SINA_FIELDS
+    doc=sina('IS')
+    for item in doc['result']['data']['report_list']['20241231']['data']:
+        if item['item_field']==SINA_FIELDS[field][0]:item.update(item_field=replacement,item_title=title)
+    rows=map_sina(json.dumps(doc),'600036.SH',['2024-12-31'],'IS','evidence')
+    assert next(r for r in rows if r['field']==field)['value'] is None
+
+
+def test_financial_total_profit_is_not_parent_profit():
+    doc=sina('IS')
+    for item in doc['result']['data']['report_list']['20241231']['data']:
+        if item['item_field']=='PARENETP':item.update(item_field='NETPROFIT',item_title='净利润')
+    rows=map_sina(json.dumps(doc),'600036.SH',['2024-12-31'],'IS','evidence')
+    assert next(r for r in rows if r['field']=='parent_netprofit')['value'] is None

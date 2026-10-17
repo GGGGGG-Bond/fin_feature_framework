@@ -62,3 +62,7 @@ FI=主要财务指标，IS=利润表，BS=资产负债表。字段映射为候�
 ## 2026-10-17：2C 实现补充
 
 本字典数值单位不变；CLI 的新清洗/特征路径改用 statement_version 标准值，兼容 clean 数值列仍为原计量。record_ref 现可指向准确 version_id，clean_ref 指向标准化清洗结果；旧行不猜测回填。运行时单位 fixture 不重写已持久化标准值，未知单位依然拒算。见 [2C 模型](../stage-2/data-model.md)与[操作指南](../stage-2/2c-operations.md)。
+
+## 2026-10-17：双源采样金融模板映射
+
+标准字段定义不变。新浪 TOTSHAREQUI（股东权益/所有者权益合计）与 TOTALOWNEREQUI（所有者权益合计）映射总权益；NETPARECOMPPROF、NETPARESHARPROF（归属于母公司的净利润）映射归母净利润。使用精确代码/标题白名单且拒绝多候选歧义。仅替代映射记录 source-sample-v2，未知单位和修订口径保留。普通营业收入及其他业务成本不替代营业总收入/营业成本，归母权益不替代总权益。依据和范围见 [金融映射说明](../stage-3/financial-mapping.md)。
