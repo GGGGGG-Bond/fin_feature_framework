@@ -140,3 +140,20 @@
 **代价与边界**：失败时的孤儿文件与临时文件会占用磁盘且不自动清理（GC/恢复须另立契约）；`UnitEvidence` 的强度取决于协调器提供的核验器，2B-2 必须由协调器真实重建；本批未接 HTTP、未升级任何真实数据库，`audit-raw` 尚无真实库可对账。
 
 **验证办法**：`tests/test_raw_store.py`、`tests/test_ingestion_migration.py`、`tests/test_ingestion_unit.py`、`tests/test_raw_audit.py` 共 91 项，配合既有回归共 343 项离线通过；故障分支均为真实注入（fsync/link/DB 插入/迁移中途/备份目标/损坏 gzip）。B01-B15 与 B42 的场景到用例映射见 [2B 验收矩阵](stage-2/2b-test-matrix.md)。
+
+### 2B-1 审阅整改记录（实现 agent，2026-10-17；状态：待复审）
+
+独立审阅对送审头 `b8b2b3f` 提出 4 项 P1 + 4 项 P2（R1-R8），整改选择如下（审阅材料：分支 `docs/review-stage2b1-b8b2b3f`，commit `8857ecc`）：
+
+1. **R1 备份入口下沉到 `init_schema`**：常规建库入口也走"有待执行迁移且库已有数据则先备份"路径，不只 `migrate_with_backup`。理由：`init_schema` 是 CLI/测试默认入口，若它绕过备份，含历史数据的 v3 库会被直接升级 v4 而无副本。
+2. **R2 只读连接与只读 RawStore 分离**：新增 `get_readonly_connection`（`mode=ro`，不创建库/目录、不改 `journal_mode`）与 `build_readonly_raw_store`（`readonly=True`，根不存在即拒绝）。理由：`audit-raw` 的只读承诺不能依赖调用方自觉，须在连接与存储两层强制。
+3. **R3 孤儿判断用全库引用集合**：按 run 过滤对账时，孤儿基准仍是全库所有快照引用的文件，仅文件扫描范围限定到所选 run 的目录前缀。理由：按 run 过滤引用集合会把其他批次的合法文件误报为孤儿。
+4. **R4 来源行身份预检增版本分组与诊断**：`(snapshot_id,row_index)` 幂等比对除内容哈希与四项元信息外，还比 `report_date`/`table_type`/`source_name`/`secucode`（版本分组）与 `normalization_diagnostics`。理由：同一行定位改传另一报告期或不同诊断，静默返回原期间版本等于丢失修订。
+5. **R5 备份目标用私有临时 + `os.link` 原子不覆盖**：先写唯一私有临时文件，再 `os.link` 发布；`FileExistsError` 即并发抢先拒绝，失败清理只删自己的临时文件。理由：`exists()` 检查与 `connect(target)` 之间存在竞争窗口，并发可覆盖刚生成的其他备份。
+6. **R6 v4 结构复查增必需列**：`collect_v4_structure_gaps` 除表名与部分列外，还逐列校验 `ingest_unit`/`ingest_attempt` 的必需列。理由：删掉 `error_code` 等列后版本号仍为 4，结构不完整却被接受。
+7. **R7 单元完整性逐页重核当前文件**：`_verify_unit_evidence` 不只信历史 `valid` 标志，逐页重新核对当前文件存在且哈希/大小一致。理由：完整性证明中的另一页文件已删除，仍能新增 `evidence_sufficient=1` 版本。
+8. **R8 成功单元全部最终页必须 valid**：`_check_unit_evidence` 检查每页最终尝试（同页最大 `http_attempt`）必须 `valid`；`attempt_without_snapshot` 只对最终尝试报告。理由：成功单元仍有 pending 页，对账却返回干净、退出 0。
+
+**非阻断 H1（2B-2 前须修）**：`create_statement_version` 两处 `_record_observation` 未传 `observed_at`，观察时间落到 `datetime(now,localtime)` 而非实际接收 UTC——2B-2 接 HTTP 时一并修。
+
+**验证办法**：全量离线 369 项通过（原 343 + R1-R8 整改回归 26 项）；反例脚本 R1/R2/R3/R4/R6/R7/R8 均按预期抛错，R5 反例为假阳性（monkeypatch 不触发，已用直接探针验证真实竞争被阻断）。

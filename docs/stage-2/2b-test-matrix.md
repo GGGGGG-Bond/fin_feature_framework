@@ -101,3 +101,25 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/test_raw_store.py tes
 | B42 | `test_raw_audit.py`（缺文件/篡改/孤儿/temp/legacy/未完成 run-unit-attempt/成功单元缺证据、run 范围过滤、报告前后库与文件指纹不变、`cmd_audit_raw` 退出码 0/1/2 与报告落盘） |
 
 未在本批覆盖：B16-B33（2B-2）、B34-B41、B43-B46（2B-3）。
+
+## 2B-1 审阅整改映射（实现 agent 记录，2026-10-17；待复审）
+
+固定送审头 `b8b2b3f`，整改在 `feat/stage2b-1` 继续提交。审阅材料：分支 `docs/review-stage2b1-b8b2b3f`（commit `8857ecc`）。命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider -m 'not requires_network'
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -I docs/reviews/stage2b-1-b8b2b3f-repro.py
+```
+
+| 编号 | 级别 | 整改用例位置 |
+|---|---|---|
+| R1 | P1 | `test_ingestion_migration.py::TestR1InitSchemaBackup`（含历史 v3 库升级先备份、备份失败阻断迁移、空库不备份、已 v4 不备份） |
+| R2 | P1 | `test_raw_audit.py::TestR2AuditReadOnly`（journal_mode 不变且不建根、根已存在写报告不改模式、缺库返回 1、缺根返回 1） |
+| R3 | P2 | `test_raw_audit.py::TestR3NoFalseOrphans`（两个健康 run 过滤干净、其他 run 孤儿不在范围） |
+| R4 | P1 | `test_ingestion_unit.py::TestR4LocatorGroupAndDiagnostics`（不同报告期冲突、不同诊断冲突、全同幂等） |
+| R5 | P2 | `test_ingestion_migration.py::TestR5BackupExclusive`（并发目标拒绝、失败只清自己临时） |
+| R6 | P2 | `test_ingestion_migration.py::TestR6StructureGapColumns`（缺 unit/attempt 列拒绝、缺 detail 拒绝） |
+| R7 | P1 | `test_ingestion_unit.py::TestR7AllFinalPagesVerified`（另一最终页缺文件拒绝、被篡改拒绝、全在则接受） |
+| R8 | P2 | `test_raw_audit.py::TestR8SuccessUnitAllFinalPagesValid`（pending 最终页报告、invalid 最终页报告、全 valid 干净、失败重试页不阻断） |
+
+反例脚本结果：R1/R2/R3/R4/R6/R7/R8 均按预期抛错；R5 反例为假阳性（monkeypatch `sqlite3.connect` 拦截对 `target` 的连接，但整改改为私有临时 + `os.link`，从不直接连接 `target`，故不触发；已用直接探针验证真实竞争被阻断）。
