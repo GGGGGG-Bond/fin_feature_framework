@@ -192,3 +192,39 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD:$PWD/tests" .venv/bin/python -I docs/
 | F3 | P2 | `test_raw_audit.py::TestF3BodyRowCountAndObjectElements`（原体长度 vs metadata 报告、财务非对象报告、股票非对象报告） |
 
 反例脚本结果：R1-R8/C1-C4/D1-D3/E1-E3 原反例全部关闭（返回 result）；F1-F3 共 7 组反例（F1、F2a/b/c、F3a/b/c）均按预期抛错（缺陷被阻断）。脚本末尾 `assert not any('probe_error'...)` 失败是预期——F1-F3 现在正确抛错说明缺陷已修复。共享解析器：`fin_feature/storage/envelope.py`（`ParsedEnvelope`/`parse_envelope`），写入路径与只读对账消费同一份解析结果。
+
+## 2B-1 复审通过（架构与审阅 agent，2026-10-17）
+
+固定 `0710d8d` 复审通过：F1-F3 关闭，此前整改保持有效，未发现新的阻断项；离线 420 passed、11 deselected，独立验收 28 组全部通过。审阅材料：分支 `docs/review-stage2b1-0710d8d`（commit `1ce764a`）。
+
+## 2B-2 实现映射（实现 agent 记录，2026-10-17；待独立审阅）
+
+固定实现：分支 `feat/stage2b-2`，基准 `0710d8d`。命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider -m 'not requires_network'
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/test_capture_pagination.py tests/test_ingestion_coordinator.py -q -p no:cacheprovider
+```
+
+| ID | 用例位置 |
+|---|---|
+| B16 | `test_capture_pagination.py::test_b16_retry_sequence_keeps_each_attempt_evidence`（无响应→500 body→200：三 attempt 次序、后两者各有原体、仅最终页可作输入、参数白名单）；`test_b16_transport_failures_exhaust_attempts` |
+| B17 | `test_capture_pagination.py::test_b17_envelope_failures_store_body_first`（success=false/非法 JSON/结构错误：先留原体、不重试、异常不含 body） |
+| B18 | `test_capture_pagination.py::test_b18_audit_write_failure_stops_without_retry`、`test_b18_raw_store_publish_failure_stops_without_retry`（不重试、不继续）；`test_ingestion_coordinator.py::test_b18_storage_failure_stops_before_business_writes`（存储失败后无兼容 raw/版本/观察/水位写入） |
+| B19 | `test_capture_pagination.py::test_b19_multi_page_locators_and_count`（页数/行数/count 一致、每行 snapshot+0-based index 可回原页） |
+| B20 | `test_capture_pagination.py::test_b20_second_page_failure_keeps_prior_evidence`（500/页数变化/count 变化/第二页空：前页文件与审计保留、异常路径无部分结果）；`test_b20_pagination_failure_returns_no_partial_result`；业务表无部分提交由 B30/B28 用例断言 |
+| B21 | `test_capture_pagination.py::test_b21_invalid_envelopes_fail_explicitly`（bool pages、缺 pages、data 非列表、success 非严格 true、pages=0 非空、非对象行）；`test_b21_empty_result_is_not_treated_as_missing` |
+| B22 | `test_capture_pagination.py::test_b22_declared_pages_over_limit_is_incomplete_scope`（预知超限不继续请求、首响应留存、`incomplete_scope` 非零） |
+| B23 | `test_ingestion_coordinator.py::test_b23_recent_periods_selects_all_revisions_of_latest_periods`（完整分页后按规范化报告期选最近 N 期全部修订；原页全留存） |
+| B24 | `test_capture_pagination.py::test_b24_duplicate_rows_keep_their_own_locators`（跨页/页内重复各自 locator）；`test_ingestion_coordinator.py::test_b25_same_content_different_notice_is_one_version_two_observations`（同语义版本复用） |
+| B25 | `test_ingestion_coordinator.py::test_b25_versions_observations_and_a_b_a`（版本/观察/首次与本次元信息、A→B→A 恢复唯一投影）；`test_b25_same_content_different_notice_is_one_version_two_observations`；`test_b25_insufficient_old_version_gains_new_verified_observation`（旧不足版本新增观察不冒改首次标志） |
+| B26 | `test_ingestion_coordinator.py::test_b26_ambiguous_notice_and_entry_uses_digest_and_logs`（并列歧义日志与确定性）、`test_b26_null_notice_does_not_borrow_fetch_time`、`test_b26_later_batch_with_older_notice_does_not_downgrade`、`test_b26_date_format_order_uses_normalized_notice` |
+| B27 | `test_ingestion_coordinator.py::test_b27_standardization_keeps_original_measure_and_diagnostics`（16.75%、原金额、fixture 单位污染、inf 可序列化、可比性维度不自动提升）、`test_b27_non_finite_value_is_diagnosed_not_selected`、`test_b27_unknown_unit_is_not_guessed` |
+| B28 | `test_ingestion_coordinator.py::test_b28_invalid_row_fails_whole_unit_without_partial_writes`（公司不符/报告期非法：整单元回滚、失败响应审计保留）、`test_b28_mapping_failure_rolls_back_unit`（映射失败注入） |
+| B29 | `test_ingestion_coordinator.py::test_b29_null_notice_compat_raw_is_idempotent`（空公告重复成功抓取不新增、内容变化保留历史、raw 原计量） |
+| B30 | `test_ingestion_coordinator.py::test_b30_failure_at_each_write_point_rolls_back_all_business_tables`（兼容 raw/版本/当前投影/水位/成功结算五点注入：各业务表一致回滚、证据保留）、`test_b30_successful_unit_unaffected_by_other_unit_failure` |
+| B31 | `test_ingestion_coordinator.py::test_b31_commit_failure_rolls_back_and_reports_failed`（提交失败回滚、`exit_code=1`、内存计数不采用、unit 标 failed） |
+| B32 | `test_ingestion_coordinator.py::test_b32_active_outer_transaction_rejected_before_request`（请求前拒绝、无 GET/run/attempt、外层结束后可运行；底层嵌套 UOW 回归继续由 2A 测试覆盖） |
+| B33 | `test_ingestion_coordinator.py::test_b33_observed_at_is_real_receive_utc_for_first_and_repeat`（首次与重复观察 observed_at 均等于响应真实接收 UTC）、`test_b33_invalid_notice_is_unknown_and_never_backfilled`（非法公告置未知、不用 fetched_at 补齐、不推进水位） |
+
+补充：`test_ingestion_coordinator.py::test_run_and_unit_identity_and_request_scope` 断言 run/unit 身份、重复计划只请求一次、`request_scope` 不含页号/重试号且含固定映射版本。B31 的 CLI 非零退出在 2B-3 接线后由 CLI 用例复验；本批以 `RunResult.exit_code` 断言等价语义。未在本批覆盖：B34-B46（2B-3）。
