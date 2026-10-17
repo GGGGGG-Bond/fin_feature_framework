@@ -825,3 +825,160 @@ class TestD3EnvelopeCompleteness:
         report = audit_raw(env.conn, env.store)
         assert not report.clean
         assert "envelope_parse_failed" in audit_codes(report)
+
+
+class TestE2EnvelopeDispatchByUnitKind:
+    """E2：信封解析按 unit_kind 分派；合法空财务页与健康股票发现不得误报。"""
+
+    def test_legal_empty_financial_response_clean(self, evidence_env):
+        """E2a：pages=0、count=0、data=[] 的合法空财务响应 → 对账干净。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        body = json.dumps(
+            {"success": True, "result": {"pages": 0, "count": 0, "data": []}}
+        ).encode()
+        env.capture(unit, rows=[], body=body)
+        env.repo.finish_unit(unit["unit_id"], "success_empty")
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert report.clean, f"合法空财务响应应干净：{[f.code for f in report.findings]}"
+
+    def test_healthy_stock_discovery_clean(self, evidence_env):
+        """E2b：股票发现 {rc, data:{total, diff}} 响应 → 对账干净，不套财务 result 规则。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit(unit_kind="stock_list")
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"f12": "000001", "f13": 0, "f14": "Example"}]
+        body = json.dumps({"rc": 0, "data": {"total": 1, "diff": rows}}).encode()
+        env.capture(unit, rows=rows, body=body)
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert report.clean, f"健康股票发现应干净：{[f.code for f in report.findings]}"
+
+    def test_stock_discovery_missing_diff_reported(self, evidence_env):
+        """E2b 反向：股票发现缺 data.diff → 报告信封解析失败。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit(unit_kind="stock_list")
+        env.repo.mark_unit_running(unit["unit_id"])
+        body = json.dumps({"rc": 0, "data": {"total": 1}}).encode()
+        env.capture(unit, rows=[], body=body)
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=0, selected_rows=0)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "envelope_parse_failed" in audit_codes(report)
+
+
+class TestE3StrictEnvelopeValidation:
+    """E3：success/data/pages/count 严格校验；多余页与混合 count 不得 clean。"""
+
+    def test_business_failure_success_false_reported(self, evidence_env):
+        """E3a：success=False → 报告信封解析失败，不能 clean。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+        body = json.dumps(
+            {"success": False, "result": {"pages": 1, "count": 1, "data": rows}}
+        ).encode()
+        env.capture(unit, rows=rows, body=body)
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "envelope_parse_failed" in audit_codes(report)
+
+    def test_missing_result_data_reported(self, evidence_env):
+        """E3b：result 缺 data → 报告信封解析失败，不能 clean。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+        body = json.dumps(
+            {"success": True, "result": {"pages": 1, "count": 1}}
+        ).encode()
+        env.capture(unit, rows=rows, body=body)
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "envelope_parse_failed" in audit_codes(report)
+
+    def test_bool_pages_and_count_rejected(self, evidence_env):
+        """E3c：pages=True、count=True（bool）→ 报告信封解析失败。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+        body = json.dumps(
+            {"success": True, "result": {"pages": True, "count": True, "data": rows}}
+        ).encode()
+        env.capture(unit, rows=rows, body=body)
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "envelope_parse_failed" in audit_codes(report)
+
+    def test_mixed_optional_count_mismatch_reported(self, evidence_env):
+        """E3d：页 1 声明 count=99、页 2 无 count；实际 2 行 → 报告行数不一致。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        env.capture(
+            unit, page=1, rows=rows,
+            body=json.dumps(
+                {"success": True, "result": {"pages": 2, "count": 99, "data": rows}}
+            ).encode(),
+        )
+        env.capture(
+            unit, page=2, rows=rows,
+            body=json.dumps(
+                {"success": True, "result": {"pages": 2, "data": rows}}
+            ).encode(),
+        )
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=2, selected_rows=2)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "row_count_mismatch" in audit_codes(report)
+
+    def test_extra_page_outside_declared_range_reported(self, evidence_env):
+        """E3e：声明 1 页、实际有页 1 和页 2 → 报告多余页。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        def body(rows, pages, count):
+            return json.dumps(
+                {"success": True, "result": {"pages": pages, "count": count, "data": rows}}
+            ).encode()
+
+        env.capture(unit, page=1, rows=rows, body=body(rows, 1, 2))
+        env.capture(unit, page=2, rows=rows, body=body(rows, 1, 2))
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=2, selected_rows=2)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "extra_page_outside_declared_range" in audit_codes(report)
