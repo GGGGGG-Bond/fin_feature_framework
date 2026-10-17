@@ -24,6 +24,18 @@ SINA_FIELDS = {
 
 
 SINA_TITLE_ALIASES = {'PARENETP': {'归属于母公司的净利润'}}
+# Exact code/title pairs observed in the saved bank/insurance/broker reports.
+SINA_FIELD_ALTERNATIVES = {
+    'total_equity': {
+        'TOTSHAREQUI': {'股东权益', '所有者权益合计'},
+        'TOTALOWNEREQUI': {'所有者权益合计'},
+    },
+    'parent_netprofit': {
+        'NETPARECOMPPROF': {'归属于母公司的净利润'},
+        'NETPARESHARPROF': {'归属于母公司的净利润'},
+    },
+}
+
 
 
 def validate_scope(secucode, periods):
@@ -60,12 +72,17 @@ def map_sina(body, secucode, periods, table, evidence):
         report = reports.get(period.replace('-', ''))
         if not isinstance(report, dict) or not isinstance(report.get('data'), list):
             raise ValueError('requested annual report absent from bounded Sina page')
+        accepted = {}
+        for field, (code, title) in SINA_FIELDS.items():
+            if FIELDS[field][0] == table:
+                accepted[code] = {title} | SINA_TITLE_ALIASES.get(code, set())
+                accepted.update(SINA_FIELD_ALTERNATIVES.get(field, {}))
         items = {}
         for item in report['data']:
             if not isinstance(item, dict):
                 raise ValueError('Sina data item must be an object')
             key = item.get('item_field')
-            if key in {v[0] for k,v in SINA_FIELDS.items() if FIELDS[k][0] == table}:
+            if key in accepted:
                 if key in items:
                     raise ValueError('ambiguous duplicate Sina core field')
                 items[key] = item
@@ -73,11 +90,18 @@ def map_sina(body, secucode, periods, table, evidence):
         for field, (code, title) in SINA_FIELDS.items():
             if FIELDS[field][0] != table:
                 continue
-            item = items.get(code)
-            if item is not None and item.get('item_title') not in ({title} | SINA_TITLE_ALIASES.get(code, set())):
-                raise ValueError('Sina core field title changed: ' + code)
+            candidates = [key for key in (code, *SINA_FIELD_ALTERNATIVES.get(field, {})) if key in items]
+            if len(candidates) > 1:
+                raise ValueError('ambiguous Sina field alternatives: ' + field)
+            selected = candidates[0] if candidates else code
+            item = items.get(selected)
+            if item is not None and item.get('item_title') not in accepted[selected]:
+                raise ValueError('Sina core field title changed: ' + selected)
             row = mapped_row(secucode, period, field, item.get('item_value') if item else None, evidence, metadata)
-            row['source_field'] = code
+            row['source_field'] = selected
+            if selected != code:
+                row['mapping_version'] = 'source-sample-v2'
+                row['source_label'] = item['item_title']
             row['currency'] = report.get('rCurrency') or 'unknown'
             row['scope'] = 'consolidated' if report.get('rType') == '合并期末' else 'unknown'
             rows.append(row)
