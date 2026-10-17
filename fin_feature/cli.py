@@ -223,12 +223,16 @@ def cmd_audit_raw(args) -> int:
         logger.error("audit-raw 必须指定 --run-id 或 --all")
         return 2
 
-    from fin_feature.storage.database import get_connection
+    from fin_feature.storage.database import get_readonly_connection
     from fin_feature.storage.raw_audit import audit_raw
-    from fin_feature.storage.raw_store import build_raw_store
+    from fin_feature.storage.raw_store import build_readonly_raw_store, RawStoreError
 
-    # 只读：不执行迁移、不建表，直接连接既有库
-    conn = get_connection(config.db_path)
+    # 只读：mode=ro 连接既有库，不创建数据库/目录、不改 journal_mode、不执行迁移
+    try:
+        conn = get_readonly_connection(config.db_path)
+    except sqlite3.OperationalError as exc:
+        logger.error("只读连接失败（库不存在或不可读）: %s", exc)
+        return 1
     try:
         tables = {
             r[0] for r in conn.execute(
@@ -239,10 +243,10 @@ def cmd_audit_raw(args) -> int:
             logger.error("数据库缺少 v4 采集证据结构（ingest_unit），请先完成迁移")
             return 1
         try:
-            raw_store = build_raw_store(config, config.db_path)
-        except ValueError as exc:
-            logger.error("配置错误: %s", exc)
-            return 2
+            raw_store = build_readonly_raw_store(config, config.db_path)
+        except (ValueError, RawStoreError) as exc:
+            logger.error("证据根配置错误或不存在: %s", exc)
+            return 1
         report = audit_raw(conn, raw_store, run_id=args.run_id)
     except sqlite3.Error as exc:
         logger.error("读取数据库失败: %s", exc)

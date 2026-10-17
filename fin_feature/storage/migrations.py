@@ -256,6 +256,17 @@ V4_REQUIRED_INDEXES = (
     "uq_observation_source_row",
 )
 
+# R6：新表的运行依赖列（缺列会在业务落盘时报 SQL 错误，应在初始化阶段拒绝）
+V4_INGEST_UNIT_REQUIRED_COLUMNS = (
+    "unit_id", "run_id", "unit_key", "source_name", "unit_kind", "report_name",
+    "secucode", "request_scope", "status", "source_rows", "selected_rows",
+    "new_versions", "new_observations", "compat_writes",
+)
+V4_INGEST_ATTEMPT_REQUIRED_COLUMNS = (
+    "attempt_id", "unit_id", "page_number", "http_attempt", "started_at",
+    "ended_at", "outcome", "error_code", "detail",
+)
+
 
 def migrate_v4_ingestion_evidence(conn: sqlite3.Connection) -> None:
     """v4 采集证据迁移：新增 ingest_unit / ingest_attempt，扩展 raw_snapshot 与观察表。
@@ -294,7 +305,11 @@ def migrate_v4_ingestion_evidence(conn: sqlite3.Connection) -> None:
 
 
 def collect_v4_structure_gaps(conn: sqlite3.Connection) -> list[str]:
-    """列出 v4 必需结构的缺失项（只读，不修改库）。"""
+    """列出 v4 必需结构的缺失项（只读，不修改库）。
+
+    R6 修复：不只检查新表名字，还检查 ingest_unit / ingest_attempt 的必需列，
+    以及关键索引定义，避免"版本号对、表名对但缺列"的库被静默接受。
+    """
     from fin_feature.storage.schema import (
         V4_RAW_SNAPSHOT_COLUMNS,
         V4_STATEMENT_OBSERVATION_COLUMNS,
@@ -310,6 +325,13 @@ def collect_v4_structure_gaps(conn: sqlite3.Connection) -> list[str]:
     for column, _spec in V4_STATEMENT_OBSERVATION_COLUMNS:
         if not _column_exists(conn, "statement_observation", column):
             gaps.append(f"缺少列 statement_observation.{column}")
+    # R6：新表的必需列（运行依赖，缺列会在业务落盘时报 SQL 错误）
+    for column in V4_INGEST_UNIT_REQUIRED_COLUMNS:
+        if not _column_exists(conn, "ingest_unit", column):
+            gaps.append(f"缺少列 ingest_unit.{column}")
+    for column in V4_INGEST_ATTEMPT_REQUIRED_COLUMNS:
+        if not _column_exists(conn, "ingest_attempt", column):
+            gaps.append(f"缺少列 ingest_attempt.{column}")
     for index in V4_REQUIRED_INDEXES:
         if not _index_exists(conn, index):
             gaps.append(f"缺少索引 {index}")
@@ -333,8 +355,14 @@ def backup_database_for_migration(conn: sqlite3.Connection, target_path):
     - 真实已有库升级前先生成副本；失败即停止迁移
     - 唯一新文件且不覆盖既有文件（目标已存在直接拒绝）
     - 失败时清理本次未完成的副本，原库与既有文件不受影响
+
+    R5 修复：先写唯一私有临时备份，再用 os.link 原子不覆盖发布到目标。
+    检查后普通 connect 不是"不覆盖"——并发可在检查与 connect 之间抢先创建目标。
+    失败清理只删除自己拥有的临时文件，绝不 unlink 目标（目标可能是别人创建的）。
     """
+    import os
     import sqlite3 as _sqlite3
+    import uuid as _uuid
     from pathlib import Path as _Path
 
     target = _Path(target_path)
@@ -342,19 +370,34 @@ def backup_database_for_migration(conn: sqlite3.Connection, target_path):
         raise RuntimeError(f"备份目标已存在，拒绝覆盖：{target}")
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    dest = _sqlite3.connect(str(target))
+    # 私有临时文件：只有本调用知道其名字，失败时只清理它
+    temp = target.parent / f".{target.name}.{_uuid.uuid4().hex}.tmp"
+    dest = _sqlite3.connect(str(temp))
     try:
         conn.backup(dest)
         dest.commit()
     except Exception:
         dest.close()
-        target.unlink(missing_ok=True)
+        temp.unlink(missing_ok=True)  # 只删自己的临时文件
         raise
     finally:
         try:
             dest.close()
         except Exception:
             pass
+
+    # 原子不覆盖发布：os.link 创建目标，已存在则说明被并发抢先，本方失败
+    try:
+        os.link(temp, target)
+    except FileExistsError:
+        temp.unlink(missing_ok=True)
+        raise RuntimeError(f"备份目标已被并发创建，拒绝覆盖：{target}")
+    except OSError as exc:
+        temp.unlink(missing_ok=True)
+        raise RuntimeError(f"备份发布失败（errno={exc.errno}）：{target}") from exc
+    finally:
+        # link 成功后临时硬链接计数=2，unlink 临时名只减计数，不删目标内容
+        temp.unlink(missing_ok=True)
     return target
 
 

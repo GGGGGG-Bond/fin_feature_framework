@@ -129,12 +129,19 @@ class RawStore:
     便于整目录搬迁与对账。所有读写都先做越根检查。
     """
 
-    def __init__(self, root: str | Path, max_body_bytes: int = DEFAULT_MAX_BODY_BYTES):
+    def __init__(self, root: str | Path, max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
+                 *, readonly: bool = False):
         if not isinstance(max_body_bytes, int) or isinstance(max_body_bytes, bool) or max_body_bytes <= 0:
             raise RawStoreError(f"max_body_bytes 必须为正整数，当前为 {max_body_bytes!r}")
         self.root = Path(root).expanduser().resolve()
         self.max_body_bytes = max_body_bytes
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.readonly = readonly
+        if readonly:
+            # 只读模式：不创建根目录；缺根作为诊断/失败，不掩盖问题
+            if not self.root.exists():
+                raise RawStoreError(f"只读校验要求证据根已存在，但目录不存在：{self.root}")
+        else:
+            self.root.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # 路径
@@ -400,3 +407,9 @@ def resolve_max_body_bytes(config) -> int:
 def build_raw_store(config, db_path) -> RawStore:
     """按配置构建 RawStore（默认根为 DB 所在目录/raw）。"""
     return RawStore(resolve_raw_root(config, db_path), resolve_max_body_bytes(config))
+
+
+def build_readonly_raw_store(config, db_path) -> RawStore:
+    """只读对账用 RawStore：不创建根目录，缺根即失败。"""
+    return RawStore(resolve_raw_root(config, db_path), resolve_max_body_bytes(config),
+                   readonly=True)

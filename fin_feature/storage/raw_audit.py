@@ -120,8 +120,17 @@ def audit_raw(
     _check_units(conn, run_id, add)
     _check_attempts(conn, run_id, add)
     referenced = _check_snapshots(conn, raw_store, run_id, add)
-    _check_orphan_files(raw_store, referenced, add)
+    # R3：孤儿判断用全库引用集合（避免把其他批次的合法文件误报为孤儿），
+    # 但文件扫描范围限定到所选 run 的目录前缀，不串入其他批次的问题。
+    all_referenced = _all_referenced_files(conn)
+    _check_orphan_files(raw_store, all_referenced, add, run_prefix=run_id)
     return report
+
+
+def _all_referenced_files(conn: sqlite3.Connection) -> set[str]:
+    """全库所有快照引用的相对路径集合（孤儿判断的基准）。"""
+    rows = conn.execute("SELECT file_path FROM raw_snapshot").fetchall()
+    return {r["file_path"] for r in rows}
 
 
 def _run_filter(run_id: str | None, column: str = "run_id") -> tuple[str, list]:
@@ -157,9 +166,15 @@ def _check_units(conn, run_id, add) -> None:
 
 
 def _check_unit_evidence(conn, unit, add) -> None:
-    """成功单元必须有可核验的分页证据；空成功也必须留有效空响应快照。"""
+    """成功单元必须有可核验的分页证据；空成功也必须留有效空响应快照。
+
+    R8：不能只看"至少一页 valid"——成功单元的全部最终页都必须已核验。
+    pending/invalid 的最终页、缺页或 attempt/snapshot 状态矛盾都要报告。
+    历史失败重试页（非最终页）可保留，不要求其也 valid。
+    """
     attempts = conn.execute(
-        "SELECT * FROM ingest_attempt WHERE unit_id = ?", (unit["unit_id"],)
+        "SELECT * FROM ingest_attempt WHERE unit_id = ? ORDER BY page_number, http_attempt",
+        (unit["unit_id"],),
     ).fetchall()
     if not attempts:
         add(
@@ -168,23 +183,50 @@ def _check_unit_evidence(conn, unit, add) -> None:
             run_id=unit["run_id"], unit_id=unit["unit_id"],
         )
         return
-    valid_pages = 0
+
+    # 每页取最终尝试（同页最大 http_attempt）；最终尝试才是单元结论
+    final_by_page: dict[int, sqlite3.Row] = {}
     for attempt in attempts:
+        page = attempt["page_number"]
+        if page not in final_by_page or attempt["http_attempt"] > final_by_page[page]["http_attempt"]:
+            final_by_page[page] = attempt
+
+    for page_number, attempt in sorted(final_by_page.items()):
         snapshot = conn.execute(
             "SELECT * FROM raw_snapshot WHERE attempt_id = ?", (attempt["attempt_id"],)
         ).fetchone()
-        if snapshot is not None and snapshot["validation_status"] == "valid":
-            valid_pages += 1
-    if valid_pages == 0:
-        add(
-            "unit_success_without_evidence", SEVERITY_ERROR,
-            "单元标为成功但没有已校验的 v4 页证据",
-            run_id=unit["run_id"], unit_id=unit["unit_id"],
-        )
+        if snapshot is None:
+            add(
+                "unit_success_without_evidence", SEVERITY_ERROR,
+                f"成功单元的最终页 {page_number} 没有快照证据",
+                run_id=unit["run_id"], unit_id=unit["unit_id"],
+                attempt_id=attempt["attempt_id"],
+            )
+            continue
+        if snapshot["raw_format"] != "http-body-v1":
+            add(
+                "unit_success_without_evidence", SEVERITY_ERROR,
+                f"成功单元的最终页 {page_number} 是 legacy-unverified，非 v4 已核验证据",
+                run_id=unit["run_id"], unit_id=unit["unit_id"],
+                snapshot_id=snapshot["snapshot_id"],
+            )
+            continue
+        if snapshot["validation_status"] != "valid":
+            add(
+                "unit_success_without_evidence", SEVERITY_ERROR,
+                f"成功单元的最终页 {page_number} 校验状态为 "
+                f"{snapshot['validation_status']}（应为 valid）",
+                run_id=unit["run_id"], unit_id=unit["unit_id"],
+                snapshot_id=snapshot["snapshot_id"],
+            )
 
 
 def _check_attempts(conn, run_id, add) -> None:
-    """逐条检查 HTTP 尝试；未结算的 attempt 在任何单元状态下都算未完成。"""
+    """逐条检查 HTTP 尝试；未结算的 attempt 在任何单元状态下都算未完成。
+
+    attempt_without_snapshot 只对每页的最终尝试报告：历史失败重试页（被后续成功
+    尝试取代）是保留对象，不要求其也有 snapshot。transport_error 允许无 snapshot。
+    """
     where, params = _run_filter(run_id)
     rows = conn.execute(
         f"SELECT a.*, u.run_id AS u_run FROM ingest_attempt a "
@@ -192,6 +234,14 @@ def _check_attempts(conn, run_id, add) -> None:
         + (f" WHERE u.run_id = ?" if run_id is not None else ""),
         params,
     ).fetchall()
+    # 每页的最终尝试（同页最大 http_attempt）
+    final_attempt_by_page: dict[tuple, sqlite3.Row] = {}
+    for row in rows:
+        key = (row["unit_id"], row["page_number"])
+        if key not in final_attempt_by_page or \
+                row["http_attempt"] > final_attempt_by_page[key]["http_attempt"]:
+            final_attempt_by_page[key] = row
+
     for row in rows:
         if row["outcome"] == "running":
             add(
@@ -203,6 +253,11 @@ def _check_attempts(conn, run_id, add) -> None:
             continue
         if row["outcome"] == "transport_error":
             # 网络无响应：只有 attempt，允许没有 snapshot（第 3 类保留对象）
+            continue
+        # 非最终尝试（被后续重试取代）不要求 snapshot
+        key = (row["unit_id"], row["page_number"])
+        is_final = final_attempt_by_page[key]["attempt_id"] == row["attempt_id"]
+        if not is_final:
             continue
         snapshot = conn.execute(
             "SELECT snapshot_id FROM raw_snapshot WHERE attempt_id = ?", (row["attempt_id"],)
@@ -296,9 +351,19 @@ def _check_snapshots(conn, raw_store: RawStore, run_id, add) -> set[str]:
     return referenced
 
 
-def _check_orphan_files(raw_store: RawStore, referenced: set[str], add) -> None:
-    """有文件但无 snapshot 引用的孤儿与临时文件（不自动删除）。"""
+def _check_orphan_files(raw_store: RawStore, referenced: set[str], add, *,
+                        run_prefix: str | None = None) -> None:
+    """有文件但无 snapshot 引用的孤儿与临时文件（不自动删除）。
+
+    R3：孤儿判断用全库引用集合，避免把其他批次的合法文件误报为孤儿；
+    文件扫描范围限定到所选 run 的目录前缀（run_id 是路径第二段），不串入其他批次。
+    """
     for rel_path in raw_store.iter_relative_files():
+        if run_prefix is not None:
+            parts = rel_path.split("/")
+            # 路径布局 source/{run_id}/...；run_id 不在第二段则不属于本范围
+            if len(parts) < 2 or parts[1] != run_prefix:
+                continue
         if RawStore.is_temp_path(rel_path):
             add("temp_file", SEVERITY_ERROR, "未完成的临时发布文件", file_path=rel_path)
         elif rel_path not in referenced:

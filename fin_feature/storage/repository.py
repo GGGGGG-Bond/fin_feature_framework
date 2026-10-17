@@ -1171,6 +1171,11 @@ class Repository:
                 revision_notice_date=revision_notice_date,
                 revision_type=revision_type,
                 entry_time=entry_time,
+                normalization_diagnostics=normalization_diagnostics,
+                report_date=report_date,
+                table_type=table_type,
+                source_name=source_name,
+                secucode=secucode,
             )
             if replayed is not None:
                 return replayed
@@ -1350,10 +1355,12 @@ class Repository:
     def _precheck_observation_identity(
         self, *, snapshot_id: str, row_index: int, metric_hash: str, semantic_hash: str,
         notice_date, revision_notice_date, revision_type, entry_time,
+        normalization_diagnostics, report_date, table_type, source_name, secucode,
     ) -> str | None:
         """来源行身份幂等预检：同 (snapshot_id, row_index) 重处理。
 
-        - 同一身份、同一内容版本与同一元信息/诊断 → 幂等，返回既有 version_id
+        - 同一身份、同一版本分组（report_date/table_type/source_name/secucode）、
+          同一内容版本与同一元信息/诊断 → 幂等，返回既有 version_id
         - 任一不同 → CaptureConflict，不静默改旧观察，也不部分修改当前投影
         预检发生在当前投影更新之前（契约第 6 节）。
         """
@@ -1367,9 +1374,17 @@ class Repository:
             return None
 
         version = self.conn.execute(
-            "SELECT metric_hash, semantic_hash FROM statement_version WHERE version_id = ?",
+            "SELECT metric_hash, semantic_hash, report_date, table_type, "
+            "source_name, secucode FROM statement_version WHERE version_id = ?",
             (existing["version_id"],),
         ).fetchone()
+        same_group = (
+            version is not None
+            and version["report_date"] == report_date
+            and version["table_type"] == table_type
+            and version["source_name"] == source_name
+            and version["secucode"] == secucode
+        )
         same_content = (
             version is not None
             and version["metric_hash"] == metric_hash
@@ -1380,12 +1395,13 @@ class Repository:
             and existing["revision_notice_date"] == revision_notice_date
             and existing["revision_type"] == revision_type
             and existing["entry_time"] == entry_time
+            and existing["normalization_diagnostics"] == normalization_diagnostics
         )
-        if same_content and same_meta:
+        if same_group and same_content and same_meta:
             return existing["version_id"]
         raise CaptureConflict(
             f"来源行身份 (snapshot={snapshot_id}, row_index={row_index}) 已存在，"
-            "但本次内容或元信息不同：拒绝静默改写既有观察"
+            "但本次版本分组、内容或元信息/诊断不同：拒绝静默改写既有观察"
         )
 
     def _verify_new_evidence(
@@ -1495,6 +1511,10 @@ class Repository:
                 raise ValueError(
                     f"单元页证据 {page_snapshot_id} 不属于单元 {unit['unit_id']}"
                 )
+            # R7：不能只信历史 valid 标志——逐页重新核对当前文件存在且哈希/大小一致
+            self._verify_evidence_file(
+                page["file_path"], page["raw_content_hash"], page["raw_bytes"]
+            )
 
         if row_index is None:
             raise ValueError(
