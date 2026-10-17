@@ -1,4 +1,4 @@
-"""CLI 入口：爬取/清洗/特征/质量/增量/回测 及原始证据对账七个子命令。
+"""CLI 入口：爬取/清洗/特征/质量/增量/回测 及原始证据对账、离线重放八个子命令。
 
 用法：
     python -m fin_feature.cli crawl
@@ -266,6 +266,39 @@ def cmd_backtest(args) -> None:
     db.close()
 
 
+def cmd_replay(args) -> int:
+    """Read-only replay; no migration, network requests or feature/log writes."""
+    import json
+    import sqlite3
+    from fin_feature.replay import replay_result
+    from fin_feature.storage.database import get_readonly_connection
+    conn = None
+    try:
+        config = load_config(args.config)
+        conn = get_readonly_connection(config.db_path)
+        conn.execute('BEGIN')
+        repo = Repository(conn)
+        if args.result_id:
+            ids = [args.result_id]
+        else:
+            ids = [row[0] for row in conn.execute(
+                'SELECT result_id FROM feature_compute_log WHERE compute_run_id=? ORDER BY result_id',
+                (args.compute_run_id,))]
+        if not ids:
+            raise ValueError('no calculation results in the requested scope')
+        results = [replay_result(repo, result_id) for result_id in ids]
+        print(json.dumps({'total':len(results),'matched':sum(r['match'] for r in results),
+                          'replay_scope':'saved-inputs/current-code','results':results},ensure_ascii=False))
+        return 0 if all(r['match'] for r in results) else 1
+    except (ValueError, KeyError, TypeError, OSError, sqlite3.Error) as exc:
+        print(f'Replay failed: {type(exc).__name__}: {exc}',file=sys.stderr)
+        return 2
+    finally:
+        if conn is not None:
+            conn.rollback()
+            conn.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="fin_feature",
@@ -292,6 +325,11 @@ def main() -> None:
     ar.add_argument("--report-dir", default=None,
                     help="TXT/JSON 报告输出目录，须在证据根外（默认 data/audit）")
 
+    rp = sub.add_parser("replay", help="按已保存输入离线重放（只读、当前代码）")
+    scope = rp.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--result-id", help="重放一条不可变计算结果")
+    scope.add_argument("--compute-run-id", help="重放一个计算批次")
+
     args = parser.parse_args()
 
     commands = {
@@ -302,6 +340,7 @@ def main() -> None:
         "incremental": cmd_incremental,
         "backtest": cmd_backtest,
         "audit-raw": cmd_audit_raw,
+        "replay": cmd_replay,
     }
     result = commands[args.command](args)
     # 传播退出码（None 视为成功）

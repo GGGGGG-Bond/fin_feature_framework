@@ -99,6 +99,41 @@ def _reason(feature, value, ctx, diagnostics, inputs):
     return 'missing_input'
 
 
+def evaluate_feature(adapter, company, date, feature_name):
+    """One pure business calculation shared by normal runs and offline replay."""
+    from fin_feature.features.engine import _build_context
+    from fin_feature.features.base import FeatureContext
+    cls = FeatureRegistry.get_by_name(feature_name)
+    if cls is None or feature_name not in DEPENDENCIES:
+        raise ValueError('unsupported feature dependency declaration')
+    ctx = _build_context(adapter, company, date)
+    if ctx is None:
+        ctx = FeatureContext(company, date, {}, None, None, diagnostics=[])
+    context_diags = list(ctx.diagnostics or [])
+    ctx.diagnostics = []
+    feature = cls()
+    try:
+        value = feature.calculate(ctx)
+        if value is not None and (isinstance(value, bool) or not math.isfinite(value)):
+            value = None
+            ctx.diagnostics.append({'feature': feature.name, 'reason_code': 'invalid_value'})
+    except Exception:
+        value = None
+        ctx.diagnostics.append({'feature': feature.name, 'reason_code': 'calculation_error'})
+    inputs = input_lineage(adapter, company, date, feature.name)
+    diagnostics = context_diags + ctx.diagnostics
+    for clean_id in sorted({i['clean_ref'] for i in inputs if i['clean_ref']}):
+        row = adapter.results_by_id[clean_id]
+        diagnostics += [{**d, 'report_date': row['version']['report_date']} for d in json.loads(row['diagnostics'])]
+    kind, fields = DEPENDENCIES[feature.name]
+    allowed_fields = set(fields) | ({'current_sq', 'previous_sq'} if kind == 'qoq' else set())
+    dates = {i['report_date'] for i in inputs}
+    diagnostics = [d for d in diagnostics if d.get('report_date', date) in dates and
+                   (d.get('feature') == feature.name or (not d.get('feature') and d.get('field') in allowed_fields))]
+    return {'feature_value': value, 'not_computable_reason': _reason(feature, value, ctx, diagnostics, inputs),
+            'inputs': inputs, 'diagnostics': diagnostics}
+
+
 def compute_versioned(repo, groups=None, config=None):
     from fin_feature.features.engine import DEFINITION_VERSION, _build_context
     from fin_feature.features.base import FeatureContext
@@ -118,35 +153,12 @@ def compute_versioned(repo, groups=None, config=None):
         adapter = VersionedCleanRepository(repo, config)
         pairs = sorted({(company, date) for company, date, _ in adapter.results})
         for company, date in pairs:
-            ctx = _build_context(adapter, company, date)
-            if ctx is None:
-                ctx = FeatureContext(company, date, {}, None, None, diagnostics=[])
-            context_diags = list(ctx.diagnostics or [])
             for cls in classes:
                 feature = cls()
-                ctx.diagnostics = []
-                try:
-                    value = feature.calculate(ctx)
-                    if value is not None and (isinstance(value, bool) or not math.isfinite(value)):
-                        value = None
-                        ctx.diagnostics.append({'feature': feature.name, 'reason_code': 'invalid_value'})
-                except Exception:
-                    value = None
-                    ctx.diagnostics.append({'feature': feature.name, 'reason_code': 'calculation_error'})
-                inputs = input_lineage(adapter, company, date, feature.name)
+                calculated = evaluate_feature(adapter, company, date, feature.name)
+                value, reason = calculated['feature_value'], calculated['not_computable_reason']
+                inputs, diagnostics = calculated['inputs'], calculated['diagnostics']
                 version_ids = canonical_json(sorted({i['record_ref'] for i in inputs if i['record_ref']}))
-                diagnostics = context_diags + ctx.diagnostics
-                required_clean = {i['clean_ref'] for i in inputs if i['clean_ref']}
-                for clean_id in sorted(required_clean):
-                    row = adapter.results_by_id[clean_id]
-                    diagnostics += [{**d, 'report_date': row['version']['report_date']} for d in json.loads(row['diagnostics'])]
-                kind, fields = DEPENDENCIES[feature.name]
-                diagnostic_fields = set(fields) | ({'current_sq', 'previous_sq'} if kind == 'qoq' else set())
-                dates = {i['report_date'] for i in inputs}
-                diagnostics = [d for d in diagnostics if d.get('report_date', date) in dates and
-                               (d.get('feature') == feature.name or
-                                (not d.get('feature') and d.get('field') in diagnostic_fields))]
-                reason = _reason(feature, value, ctx, diagnostics, inputs)
                 snapshot = canonical_json({'pipeline_version': 'stage2c-v1', 'cleaning': adapter.config,
                                            'inputs': inputs, 'diagnostics': diagnostics,
                                            'code_identity': identity})
