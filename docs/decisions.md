@@ -178,3 +178,13 @@
 3. **D3 财务页信封强类型解析**：`_parse_page_envelope` 改返回 `{pages, count, error}` 强类型结果，不用 None 表示"跳过"；pages 必需、count 可选、解析失败报 `envelope_parse_failed`；`_check_page_completeness` count 缺失只跳过总行数检查，不影响页数完整性。理由：count 不是 int 或 JSON 解析失败就返回 None，envelopes 为空便跳过所有页数检查——无 count 缺页不报、HTML 信封解析失败也 clean。
 
 **验证办法**：全量离线 395 项通过（R1-R8 回归 26 + C1-C4 回归 16 + D1-D3 回归 10）；反例脚本 R1-R8/C1-C4 全部关闭，D1-D3/D3b 均按预期抛错（缺陷被阻断）。
+
+### 2B-1 完整性复审整改记录（实现 agent，2026-10-17；状态：待复审）
+
+完整性复审对送审头 `c905d4b` 确认 R1-R8/C1-C4/D1-D3 全部关闭，但扩展检查发现 1 项 P1 + 2 项 P2（E1-E3），整改选择如下（审阅材料：分支 `docs/review-stage2b1-c905d4b`，commit `d68c892`）：
+
+1. **E1 证明精确覆盖全部最终页**：`_verify_unit_evidence` 在逐页核验前先收集证明引用的页号集合 `proof_pages`，与数据库最终页集合 `expected_pages` 精确比对——遗漏页、范围外页、重复页均拒绝；重复页单独前置检查（页集合恰好匹配但引用数大于页数时也拒绝）。理由：原实现只遍历调用方提供的 `page_ids` 逐页核验，没检查证明是否覆盖全部最终页——声明两页、第二页失败时，只含第一页的证明仍能写入 `evidence_sufficient=1` 版本。
+2. **E2 信封解析按 unit_kind 分派**：`_parse_page_envelope` 接受 `unit_kind` 参数；财务信封为 `{success, result:{pages,count,data}}`，股票发现信封为 `{rc, data:{total,diff}}`，新增 `_parse_stock_list_envelope` 处理后者；财务合法空页 `pages=0` 视为合法（单页空响应）。理由：原实现只认财务 `result` 形状——合法空财务页 `pages=0` 被误报 `pages 非正整数`，健康股票发现 `data.total/data.diff` 被误报"缺少 result"。
+3. **E3 严格信封校验**：`success` 必须严格为 `True`（`is not True`）；`result.data` 必须存在且为列表；`pages`/`count` 用 `_is_int_not_bool` 排除 bool（bool 是 int 子类）；`_check_page_completeness` 既查缺页也查多余页（`extra_page_outside_declared_range`）；混合 count 处理改为"一旦某页出现有效 count，所有已出现 count 必须一致且完整范围实际总行数必须匹配"（不再要求每页都提供才检查）。理由：原实现 `success=false`、缺 `data`、bool 页数、混合 count 跳过总检查、多余页等情况都能对账成功。
+
+**验证办法**：全量离线 406 项通过（R1-R8 回归 26 + C1-C4 回归 16 + D1-D3 回归 10 + E1-E3 回归 11）；反例脚本 R1-R8/C1-C4/D1-D3 全部关闭，E1-E3 均按预期抛错（缺陷被阻断）。
