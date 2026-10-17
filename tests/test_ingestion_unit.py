@@ -735,3 +735,54 @@ class TestC2TerminalFailureNotSufficient:
             (version_id,),
         ).fetchone()[0]
         assert flag == 1
+
+
+class TestD2FinalAttemptFromDatabase:
+    """D2：最终页身份由数据库事实决定，不能只信调用方给出的快照列表。"""
+
+    def test_stale_ok_snapshot_after_later_failure_rejected(self, evidence_env):
+        """attempt 1 成功、attempt 2 失败 → 传 attempt 1 旧快照不能声明充分证据。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        old = env.capture(
+            unit, http_attempt=1, rows=rows, outcome="ok", http_status=200,
+        )
+        env.capture(
+            unit, http_attempt=2, rows=[], body=b"HTTP 500",
+            outcome="http_error", http_status=500, validation="invalid",
+        )
+        evidence = env.evidence(unit["unit_id"], [old])
+        with pytest.raises(ValueError, match="最终尝试是 http_attempt=2"):
+            env.create_version(unit, old, row_index=0, evidence=evidence)
+        assert env.conn.execute("SELECT COUNT(*) FROM statement_version").fetchone()[0] == 0
+
+    def test_stale_ok_snapshot_after_later_success_rejected(self, evidence_env):
+        """attempt 1 成功、attempt 2 也成功 → 只能引用 attempt 2 的快照。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        old = env.capture(
+            unit, http_attempt=1, rows=rows, outcome="ok", http_status=200,
+        )
+        later = env.capture(
+            unit, http_attempt=2, rows=rows, outcome="ok", http_status=200,
+        )
+        # 传旧快照应被拒绝
+        evidence_old = env.evidence(unit["unit_id"], [old])
+        with pytest.raises(ValueError, match="最终尝试是 http_attempt=2"):
+            env.create_version(unit, old, row_index=0, evidence=evidence_old)
+        # 传最新快照应被接受
+        evidence_new = env.evidence(unit["unit_id"], [later])
+        version_id = env.create_version(unit, later, row_index=0, evidence=evidence_new)
+        flag = env.conn.execute(
+            "SELECT evidence_sufficient FROM statement_version WHERE version_id = ?",
+            (version_id,),
+        ).fetchone()[0]
+        assert flag == 1

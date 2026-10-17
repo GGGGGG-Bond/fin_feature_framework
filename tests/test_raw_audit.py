@@ -742,3 +742,86 @@ class TestC4FailedResponseEvidence:
 
         report = audit_raw(env.conn, env.store)
         assert report.clean, f"transport_error 无响应不应报缺口：{[f.code for f in report.findings]}"
+
+
+class TestD3EnvelopeCompleteness:
+    """D3：可选 count 缺失或解析失败时，分页完整性检查不被跳过。"""
+
+    def test_missing_count_missing_page_reported(self, evidence_env):
+        """无 count、声明 3 页、仅保存页 1 → 对账报告缺页。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        page = json.dumps(
+            {"success": True, "result": {"pages": 3, "data": rows}}
+        ).encode()
+        env.capture(unit, page=1, rows=rows, body=page)
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "missing_declared_page" in audit_codes(report)
+
+    def test_missing_count_complete_pages_clean(self, evidence_env):
+        """无 count、声明 2 页、页 1 和页 2 都在 → 对账干净（不回归）。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows_a = [{"TOTAL_OPERATE_INCOME": 100}]
+        rows_b = [{"TOTAL_OPERATE_INCOME": 200}]
+
+        def body_no_count(rows, pages):
+            return json.dumps(
+                {"success": True, "result": {"pages": pages, "data": rows}}
+            ).encode()
+
+        env.capture(unit, page=1, rows=rows_a, body=body_no_count(rows_a, 2))
+        env.capture(unit, page=2, rows=rows_b, body=body_no_count(rows_b, 2))
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=2, selected_rows=2)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert report.clean, f"无 count 完整页应干净：{[f.code for f in report.findings]}"
+
+    def test_html_body_reported(self, evidence_env):
+        """HTTP 200/ok 的 HTML 原体被错误标 valid → 对账报告信封解析失败。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        env.capture(
+            unit, rows=rows, body=b"<html>not-json</html>",
+            validation="valid", outcome="ok",
+        )
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "envelope_parse_failed" in audit_codes(report)
+
+    def test_non_json_body_reported(self, evidence_env):
+        """非法 JSON 原体 → 对账报告信封解析失败。"""
+        env = evidence_env
+        env.new_run()
+        unit = env.new_unit()
+        env.repo.mark_unit_running(unit["unit_id"])
+        rows = [{"TOTAL_OPERATE_INCOME": 100}]
+
+        env.capture(
+            unit, rows=rows, body=b"{not valid json",
+            validation="valid", outcome="ok",
+        )
+        env.repo.finish_unit(unit["unit_id"], "success", source_rows=1, selected_rows=1)
+        env.repo.finalize_run(unit["run_id"])
+
+        report = audit_raw(env.conn, env.store)
+        assert not report.clean
+        assert "envelope_parse_failed" in audit_codes(report)

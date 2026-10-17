@@ -611,3 +611,70 @@ class TestC1StructureValidationComplete:
         gaps = collect_v4_structure_gaps(conn)
         assert any("列集" in g for g in gaps)
         conn.close()
+
+
+class TestD1IndexPredicateValidation:
+    """D1：索引部分谓词不只查有无 WHERE，还比较具体谓词。"""
+
+    def test_where_zero_predicate_rejected(self, tmp_path):
+        """WHERE 0 冒充部分条件 → 结构核验报告缺口。"""
+        conn = get_connection(str(tmp_path / "v4.db"))
+        run_migrations(conn)
+        conn.execute("DROP INDEX uq_raw_snapshot_attempt")
+        conn.execute(
+            "CREATE UNIQUE INDEX uq_raw_snapshot_attempt ON raw_snapshot(attempt_id) WHERE 0"
+        )
+        conn.commit()
+
+        gaps = collect_v4_structure_gaps(conn)
+        assert any("谓词" in g for g in gaps), gaps
+        with pytest.raises(RuntimeError, match="结构不完整"):
+            verify_v4_structure(conn)
+        conn.close()
+
+    def test_inverted_is_null_predicate_rejected(self, tmp_path):
+        """反向 IS NULL 谓词（attempt_id IS NULL）→ 结构核验报告缺口。"""
+        conn = get_connection(str(tmp_path / "v4.db"))
+        run_migrations(conn)
+        conn.execute("DROP INDEX uq_raw_snapshot_attempt")
+        conn.execute(
+            "CREATE UNIQUE INDEX uq_raw_snapshot_attempt ON raw_snapshot(attempt_id) "
+            "WHERE attempt_id IS NULL"
+        )
+        conn.commit()
+
+        gaps = collect_v4_structure_gaps(conn)
+        assert any("谓词" in g for g in gaps), gaps
+        conn.close()
+
+    def test_correct_predicate_accepted(self, tmp_path):
+        """正确谓词（attempt_id IS NOT NULL）→ 结构核验通过（不回归）。"""
+        conn = get_connection(str(tmp_path / "v4.db"))
+        run_migrations(conn)
+        # 重建为等价写法（大小写/空白变化）应通过
+        conn.execute("DROP INDEX uq_raw_snapshot_attempt")
+        conn.execute(
+            "CREATE UNIQUE INDEX uq_raw_snapshot_attempt ON raw_snapshot(attempt_id) "
+            "WHERE attempt_id is not null"
+        )
+        conn.commit()
+
+        gaps = collect_v4_structure_gaps(conn)
+        assert not any("uq_raw_snapshot_attempt" in g for g in gaps), gaps
+        conn.close()
+
+    def test_observation_missing_predicate_condition_rejected(self, tmp_path):
+        """uq_observation_source_row 遗漏一个非空条件 → 结构核验报告缺口。"""
+        conn = get_connection(str(tmp_path / "v4.db"))
+        run_migrations(conn)
+        conn.execute("DROP INDEX uq_observation_source_row")
+        conn.execute(
+            "CREATE UNIQUE INDEX uq_observation_source_row "
+            "ON statement_observation(snapshot_id, row_index) "
+            "WHERE snapshot_id IS NOT NULL"
+        )
+        conn.commit()
+
+        gaps = collect_v4_structure_gaps(conn)
+        assert any("谓词" in g for g in gaps), gaps
+        conn.close()
