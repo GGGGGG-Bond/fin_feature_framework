@@ -140,6 +140,7 @@ def format_report(result: BacktestResult) -> str:
     """将分组分析结果格式化为可读报告。"""
     lines = [
         "=== 特征分组分析报告 ===",
+        "数据视角：当前保存版本按报告期分组；未按当时公开时间筛选，不作为历史可交易信号。",
         f"特征：{result.feature_name}",
         f"分组日：{result.formation_date}",
         f"分组数：{result.n_groups}",

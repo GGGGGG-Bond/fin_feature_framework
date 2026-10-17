@@ -40,6 +40,36 @@ def _review(path):
                 verification_scope='supplied summary only; source/PDF evidence was not revalidated by delivery-report')
 
 
+QUALITY_FIELDS = {
+    'financial_indicator': ('weightavg_roe','gross_margin'),
+    'income_statement': ('total_operate_income','parent_netprofit','operate_cost'),
+    'balance_sheet': ('total_assets','total_liabilities','total_equity'),
+}
+
+
+def cleaning_quality(adapter):
+    if adapter is None:
+        return None
+    result = {}
+    for table, fields in QUALITY_FIELDS.items():
+        rows = [row for key,row in adapter.results.items() if key[2]==table]
+        total = len(rows)
+        diagnostics = [d for row in rows for d in json.loads(row['diagnostics'])]
+        anomalies = {(row['clean_id'],d.get('field')) for row in rows
+                     for d in json.loads(row['diagnostics'])
+                     if d.get('field') in fields and d.get('reason_code','').startswith('outlier_')}
+        missing = {field:sum(json.loads(row['standardized_fields']).get(field) is None for row in rows)
+                   for field in fields}
+        result[table] = dict(current_statements=total, kept=sum(row['status']=='kept' for row in rows),
+            dropped=sum(row['status']=='dropped' for row in rows),
+            missing_counts=missing,missing_rates={field:count/total if total else None for field,count in missing.items()},
+            monitored_fields=list(fields),monitored_field_slots=total*len(fields),
+            anomalous_field_slots=len(anomalies),anomalous_field_rate=len(anomalies)/(total*len(fields)) if total else None,
+            diagnostic_counts=dict(Counter(d['reason_code'] for d in diagnostics)),
+            scope='after cleaning rules, including dropped statements; each anomalous field counted once')
+    return result
+
+
 def build_report(repo, raw_store, config=None, review_summary=None):
     """No migrations or writes. Capture database facts in one read transaction."""
     review = _review(review_summary)
@@ -76,6 +106,7 @@ def build_report(repo, raw_store, config=None, review_summary=None):
         for unit in units:
             scope = json.loads(unit['request_scope'] or '{}')
             unit_scopes.append(dict(unit_id=unit['unit_id'],run_id=unit['run_id'],
+                counters={key:unit[key] for key in ('source_rows','selected_rows','new_versions','new_observations','compat_writes')},
                 scope={key:value for key,value in scope.items() if key in allowed}))
         source_counts = [dict(r) for r in repo.conn.execute(
             'SELECT source_name,COUNT(*) AS versions,SUM(is_superseded=0) AS current_versions,'
@@ -131,7 +162,9 @@ def build_report(repo, raw_store, config=None, review_summary=None):
             expected_features=expected, returned_features=len(features), missing_features=len(missing),
             non_null_features=populated, feature_value_coverage=populated/expected if expected else None,
             not_computable_reasons=reasons, input_version_count=len(versions), immutable_compute_logs=repo.get_table_count('feature_compute_log'),
-            clean_current_valid=adapter is not None, audit=audit.as_dict(), external_review=review,
+            clean_current_valid=adapter is not None, cleaning_quality=cleaning_quality(adapter),
+            raw_row_counts={table:repo.get_table_count('raw_'+table) for table in QUALITY_FIELDS},
+            audit=audit.as_dict(), external_review=review,
             issues=issues, issue_counts=reason_count, exit_code=1 if issues else 0,
             limitations=['Second provider checks remain separate and never silently enter primary financial values.',
                          'External review report is a supplied snapshot, not fresh evidence verification.',
@@ -162,6 +195,7 @@ def export_report(repo, raw_store, output_dir, config=None, review_summary=None)
              f"计划特征 {result['expected_features']}；返回 {result['returned_features']}；有值 {result['non_null_features']}；缺输出 {result['missing_features']}。",
              f"当前主来源公司/报告期 {result['primary_company_periods']}；当前输入版本 {result['input_version_count']}。",
              '', '## 采集状态','',json.dumps(result['run_status_counts'],ensure_ascii=False),
+             '', '## 清洗缺失率与异常率','',json.dumps(result['cleaning_quality'],ensure_ascii=False),
              '', '## 特征不可计算原因','',json.dumps(result['not_computable_reasons'],ensure_ascii=False),
              '', '## 检查发现','',json.dumps(result['issue_counts'],ensure_ascii=False),
              '', '## 外部双源核查快照','',json.dumps(result['external_review'],ensure_ascii=False),

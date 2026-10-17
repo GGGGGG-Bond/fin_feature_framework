@@ -202,3 +202,21 @@ def test_real_restatement_fixture_has_before_after_and_unknown_timing():
     assert snapshot['planned_pairs']==96 and snapshot['numeric_pairs']==84
     assert snapshot['reference_checked_pairs']==snapshot['reference_match_pairs']==34
     assert snapshot['counts']=={'match_reference':34,'unreviewed':50,'source_missing':12}
+
+
+def test_cleaning_quality_rates_count_missing_drop_and_outlier_fields(repo,tmp_path):
+    from test_versioned_pipeline import seed
+    from fin_feature.refresh import refresh_current
+    seed(repo,gross_margin=200)
+    seed(repo,'income_statement',parent_netprofit=None)
+    refresh_current(repo)
+    result,*_=build_report(repo,RawStore(tmp_path/'raw'))
+    fi=result['cleaning_quality']['financial_indicator']
+    assert fi['current_statements']==fi['kept']==1
+    assert fi['monitored_field_slots']==2 and fi['anomalous_field_slots']==1
+    assert fi['anomalous_field_rate']==0.5
+    assert fi['missing_rates']=={'weightavg_roe':0,'gross_margin':0}
+    income=result['cleaning_quality']['income_statement']
+    assert income['dropped']==1
+    assert income['missing_rates']['parent_netprofit']==1
+    assert result['cleaning_quality']['balance_sheet']['anomalous_field_rate'] is None
