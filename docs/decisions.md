@@ -11,7 +11,7 @@
 | DEC-003 | 保留版本证据，限制历史查询承诺 | 提议 | 存储、查询和修订传播尚未实现 |
 | DEC-004 | 阶段 1 语义与执行契约 | 已采纳为实现契约 | 用户已授权；代码已实现，指定修复经五轮审阅，完整阶段验收待 T14/T16/T31 补齐 |
 | DEC-005 | 阶段 2A 数据模型与事务所有权 | 已采纳并合入 main | 经四轮独立审阅（R1-R7、A1-A6、B1）修订；MR!4 合入 `f299b96`，合入核验通过；阶段 2A 批次验收边界见该条 |
-| DEC-006 | 2B 采集原体、尝试审计与单元事务 | 已采纳为实现契约 | 文档交付，v4 与采集功能待实现 |
+| DEC-006 | 2B 采集原体、尝试审计与单元事务 | 已采纳为实现契约 | 2B-1 已通过独立复审（`0710d8d`，待 MR）；2B-2 已实现并完成 R1-R3 整改待复审；未接 CLI、未升级真实库 |
 
 ## DEC-001：代码与项目文档统一维护
 
@@ -124,3 +124,126 @@
 **代价与边界**：v4 增加 unit/attempt 表、快照元信息与观察定位；请求 observer、文件校验、股票发现接线和故障注入工作量增加。失败数据会占磁盘，后续 GC/恢复须另立契约。旧充分性标记不伪装为真实原体证据；旧版本首次元信息保留，新观察表达新证据。只做 eastmoney 获准小样本；不含 2C/2D、双源或生产操作。
 
 **验证**：[46 组验收场景](stage-2/2b-test-matrix.md)要求原字节一致、同身份冲突、每次响应/无响应尝试、崩溃孤儿、事务回滚、分页完整、行观察、迁移与两条 CLI 状态。文档 DDL 校验只证明规范可执行，不替代实现回归与独立审阅。
+
+### 2B-1 实施记录（实现 agent，2026-10-16；状态：待独立审阅）
+
+在 DEC-006 已采纳的契约内，实现方对契约未逐条指定之处做了以下选择，供审阅与后续批次复用：
+
+1. **v4 不并入 `ALL_DDL`**：v4 对象单独迁移，空库的 v1 基线不提前创建 2B 结构；版本 ≥4 时每次 `run_migrations` 复查必需表/列/索引，只有版本号不足以跳过结构检查。
+2. **升级入口先备份**：`migrate_with_backup` 对"已有版本记录或已有数据"的库先用 SQLite backup API 写唯一新副本（含 WAL 已提交内容）再迁移，备份失败即不迁移；显式目标已存在直接拒绝，自动命名保证不覆盖。删掉迁移"就地重试等于一次成功"的不确定性只靠事务回滚保证（DDL/加列/索引/版本登记同事务）。
+3. **`save_raw_snapshot` 两条路径**：带 `attempt_id` 的新证据路径必须校验真实文件（存在/大小/哈希）并逐项核对 unit/run/source/report/company/page；无 `attempt_id` 的 legacy 路径只能落 `legacy-unverified` + `legacy_unverified`，且不能被改判为 v4 结论。
+4. **单元完整性用可注入证明**：`UnitEvidence`（complete + 全部最终页 snapshot + `row_verifier`）代替"必须先提交 unit.success"的循环依赖；`row_verifier` 由协调器提供并在 Repository 内被调用，因此"row_index 能重建本次映射/标准值"是可核验条件而非调用方声明。
+5. **来源行身份预检先于投影变更**：`(snapshot_id,row_index)` 的重放幂等与矛盾冲突在修改 `is_superseded`/`superseded_by` 与观察行之前判定，冲突时当前投影与既有观察都不残留部分改动。
+6. **对账严格只读**：`audit-raw` 不执行迁移、不建表、不删除孤儿或临时文件、不补抓；未结算 attempt 在**任何**单元状态下都报 `unfinished_attempt`（不只成功单元），`transport_error` 允许无快照。
+7. **路径段白名单**：仅接受来源名 `[a-z][a-z0-9_]*`、UUID/摘要 `[A-Za-z0-9_-]{1,64}`、正整数页/尝试号；公司名、`report_name`、用户输入绝不作为路径段。
+
+**代价与边界**：失败时的孤儿文件与临时文件会占用磁盘且不自动清理（GC/恢复须另立契约）；`UnitEvidence` 的强度取决于协调器提供的核验器，2B-2 必须由协调器真实重建；本批未接 HTTP、未升级任何真实数据库，`audit-raw` 尚无真实库可对账。
+
+**验证办法**：`tests/test_raw_store.py`、`tests/test_ingestion_migration.py`、`tests/test_ingestion_unit.py`、`tests/test_raw_audit.py` 共 91 项，配合既有回归共 343 项离线通过；故障分支均为真实注入（fsync/link/DB 插入/迁移中途/备份目标/损坏 gzip）。B01-B15 与 B42 的场景到用例映射见 [2B 验收矩阵](stage-2/2b-test-matrix.md)。
+
+### 2B-1 审阅整改记录（实现 agent，2026-10-17；状态：待复审）
+
+独立审阅对送审头 `b8b2b3f` 提出 4 项 P1 + 4 项 P2（R1-R8），整改选择如下（审阅材料：分支 `docs/review-stage2b1-b8b2b3f`，commit `8857ecc`）：
+
+1. **R1 备份入口下沉到 `init_schema`**：常规建库入口也走"有待执行迁移且库已有数据则先备份"路径，不只 `migrate_with_backup`。理由：`init_schema` 是 CLI/测试默认入口，若它绕过备份，含历史数据的 v3 库会被直接升级 v4 而无副本。
+2. **R2 只读连接与只读 RawStore 分离**：新增 `get_readonly_connection`（`mode=ro`，不创建库/目录、不改 `journal_mode`）与 `build_readonly_raw_store`（`readonly=True`，根不存在即拒绝）。理由：`audit-raw` 的只读承诺不能依赖调用方自觉，须在连接与存储两层强制。
+3. **R3 孤儿判断用全库引用集合**：按 run 过滤对账时，孤儿基准仍是全库所有快照引用的文件，仅文件扫描范围限定到所选 run 的目录前缀。理由：按 run 过滤引用集合会把其他批次的合法文件误报为孤儿。
+4. **R4 来源行身份预检增版本分组与诊断**：`(snapshot_id,row_index)` 幂等比对除内容哈希与四项元信息外，还比 `report_date`/`table_type`/`source_name`/`secucode`（版本分组）与 `normalization_diagnostics`。理由：同一行定位改传另一报告期或不同诊断，静默返回原期间版本等于丢失修订。
+5. **R5 备份目标用私有临时 + `os.link` 原子不覆盖**：先写唯一私有临时文件，再 `os.link` 发布；`FileExistsError` 即并发抢先拒绝，失败清理只删自己的临时文件。理由：`exists()` 检查与 `connect(target)` 之间存在竞争窗口，并发可覆盖刚生成的其他备份。
+6. **R6 v4 结构复查增必需列**：`collect_v4_structure_gaps` 除表名与部分列外，还逐列校验 `ingest_unit`/`ingest_attempt` 的必需列。理由：删掉 `error_code` 等列后版本号仍为 4，结构不完整却被接受。
+7. **R7 单元完整性逐页重核当前文件**：`_verify_unit_evidence` 不只信历史 `valid` 标志，逐页重新核对当前文件存在且哈希/大小一致。理由：完整性证明中的另一页文件已删除，仍能新增 `evidence_sufficient=1` 版本。
+8. **R8 成功单元全部最终页必须 valid**：`_check_unit_evidence` 检查每页最终尝试（同页最大 `http_attempt`）必须 `valid`；`attempt_without_snapshot` 只对最终尝试报告。理由：成功单元仍有 pending 页，对账却返回干净、退出 0。
+
+**非阻断 H1（2B-2 前须修）**：`create_statement_version` 两处 `_record_observation` 未传 `observed_at`，观察时间落到 `datetime(now,localtime)` 而非实际接收 UTC——2B-2 接 HTTP 时一并修。
+
+**验证办法**：全量离线 369 项通过（原 343 + R1-R8 整改回归 26 项）；反例脚本 R1/R2/R3/R4/R6/R7/R8 均按预期抛错，R5 反例为假阳性（monkeypatch 不触发，已用直接探针验证真实竞争被阻断）。
+
+### 2B-1 复审整改记录（实现 agent，2026-10-17；状态：待复审）
+
+复审对送审头 `e3d03f7` 确认 R1-R8 全部关闭，但扩展检查发现 1 项 P1 + 3 项 P2（C1-C4），整改选择如下（审阅材料：分支 `docs/review-stage2b1-e3d03f7`，commit `5550052`）：
+
+1. **C1 结构核验覆盖全部运行写入列与索引定义**：`V4_INGEST_UNIT_REQUIRED_COLUMNS` 补 `started_at`/`ended_at`/`failure_code`/`detail`；新增 `V4_REQUIRED_INDEX_SPECS` 与 `_index_definition`，`collect_v4_structure_gaps` 逐索引查 unique 标志、列集与部分条件。理由：R6 只补了举出的一个字段，同名非唯一索引冒充唯一索引也未识别；结构核验应在初始化时报清楚缺口，而非在采集途中失败或丢失约束。
+2. **C2 终态失败响应不能凭 valid 标志冒充充分证据**：`_verify_unit_evidence` 与 `_check_unit_evidence` 都检查最终尝试 `outcome=ok` 且 HTTP 2xx；http_error 等终态失败即使文件有效、快照标 valid 也拒绝/报告。理由：原文件有效不代表这是成功响应；矛盾数据必须在此拒绝，不只指望协调器不生成。
+3. **C3 成功财务单元核对声明页数与连续页号**：`_check_unit_evidence` 解析每页原体信封（pages/count），核对各页声明总页数一致、页号从 1 连续、合计行数等于声明 count；缺页报 `missing_declared_page`。理由：`final_by_page` 仅由已有 attempt 构造，不知道声明页数，缺中间页/尾页仍报干净。
+4. **C4 区分"最终页成功完整"与"每次收到响应留证据"**：`_check_attempts` 对非最终 http_error/business_error/decode_error/schema_error/storage_error 缺快照报 `failed_response_without_evidence`；transport_error 可无 snapshot。理由：R8 改动对所有非最终尝试直接 continue，把收到 HTTP 4xx/5xx 但未留原体的证据丢失也静默豁免；契约允许历史失败重试页 invalid，但收到响应必须留证据。
+
+**验证办法**：全量离线 385 项通过（R1-R8 回归 26 + C1-C4 回归 16）；反例脚本 R1-R8 全部关闭，C1-C4 均按预期抛错（缺陷被阻断）。
+
+### 2B-1 边界复审整改记录（实现 agent，2026-10-17；状态：待复审）
+
+边界复审对送审头 `c3522d2` 确认 R1-R8/C1-C4 全部关闭、C4 关闭，但边界检查发现 1 项 P1 + 2 项 P2（D1-D3），整改选择如下（审阅材料：分支 `docs/review-stage2b1-c3522d2`，commit `7b92c23`）：
+
+1. **D1 索引部分谓词精确比较**：`V4_REQUIRED_INDEX_SPECS` 增 `predicate` 集合（规范化为 "列名 IS NOT NULL"）；新增 `_normalize_index_predicate` 从 SQL 文本提取并规范化谓词；`collect_v4_structure_gaps` 比较具体谓词。理由：partial 布尔只查有无 WHERE，`WHERE 0`/反向 IS NULL/遗漏非空条件都通过，身份约束实际失效。
+2. **D2 最终页身份由数据库事实决定**：新增 `_final_attempts_by_page` 从持久化 attempt 集合确定每页最终尝试（同页最大 http_attempt）；`_verify_unit_evidence` 核对证明引用恰为该最终尝试的唯一 snapshot。理由：只检查所传 attempt 为 ok，没检查它真是该页最终尝试——旧成功快照在后续失败/running 尝试存在时仍能冒充充分证据。
+3. **D3 财务页信封强类型解析**：`_parse_page_envelope` 改返回 `{pages, count, error}` 强类型结果，不用 None 表示"跳过"；pages 必需、count 可选、解析失败报 `envelope_parse_failed`；`_check_page_completeness` count 缺失只跳过总行数检查，不影响页数完整性。理由：count 不是 int 或 JSON 解析失败就返回 None，envelopes 为空便跳过所有页数检查——无 count 缺页不报、HTML 信封解析失败也 clean。
+
+**验证办法**：全量离线 395 项通过（R1-R8 回归 26 + C1-C4 回归 16 + D1-D3 回归 10）；反例脚本 R1-R8/C1-C4 全部关闭，D1-D3/D3b 均按预期抛错（缺陷被阻断）。
+
+### 2B-1 完整性复审整改记录（实现 agent，2026-10-17；状态：待复审）
+
+完整性复审对送审头 `c905d4b` 确认 R1-R8/C1-C4/D1-D3 全部关闭，但扩展检查发现 1 项 P1 + 2 项 P2（E1-E3），整改选择如下（审阅材料：分支 `docs/review-stage2b1-c905d4b`，commit `d68c892`）：
+
+1. **E1 证明精确覆盖全部最终页**：`_verify_unit_evidence` 在逐页核验前先收集证明引用的页号集合 `proof_pages`，与数据库最终页集合 `expected_pages` 精确比对——遗漏页、范围外页、重复页均拒绝；重复页单独前置检查（页集合恰好匹配但引用数大于页数时也拒绝）。理由：原实现只遍历调用方提供的 `page_ids` 逐页核验，没检查证明是否覆盖全部最终页——声明两页、第二页失败时，只含第一页的证明仍能写入 `evidence_sufficient=1` 版本。
+2. **E2 信封解析按 unit_kind 分派**：`_parse_page_envelope` 接受 `unit_kind` 参数；财务信封为 `{success, result:{pages,count,data}}`，股票发现信封为 `{rc, data:{total,diff}}`，新增 `_parse_stock_list_envelope` 处理后者；财务合法空页 `pages=0` 视为合法（单页空响应）。理由：原实现只认财务 `result` 形状——合法空财务页 `pages=0` 被误报 `pages 非正整数`，健康股票发现 `data.total/data.diff` 被误报"缺少 result"。
+3. **E3 严格信封校验**：`success` 必须严格为 `True`（`is not True`）；`result.data` 必须存在且为列表；`pages`/`count` 用 `_is_int_not_bool` 排除 bool（bool 是 int 子类）；`_check_page_completeness` 既查缺页也查多余页（`extra_page_outside_declared_range`）；混合 count 处理改为"一旦某页出现有效 count，所有已出现 count 必须一致且完整范围实际总行数必须匹配"（不再要求每页都提供才检查）。理由：原实现 `success=false`、缺 `data`、bool 页数、混合 count 跳过总检查、多余页等情况都能对账成功。
+
+**验证办法**：全量离线 406 项通过（R1-R8 回归 26 + C1-C4 回归 16 + D1-D3 回归 10 + E1-E3 回归 11）；反例脚本 R1-R8/C1-C4/D1-D3 全部关闭，E1-E3 均按预期抛错（缺陷被阻断）。
+
+### 2B-1 声明范围与原体一致性复审整改记录（实现 agent，2026-10-17；状态：待复审）
+
+声明范围与原体一致性复审对送审头 `2b86e07` 确认 R1-R8/C1-C4/D1-D3/E1-E3 全部关闭，但扩展检查发现 1 项 P1 + 2 项 P2（F1-F3），整改选择如下（审阅材料：分支 `docs/review-stage2b1-2b86e07`，commit `6ea6bf7`）：
+
+1. **F1 证明覆盖源端声明范围**：写入路径 `_verify_unit_evidence` 从已核验原体解析每页信封，取得源端声明 `pages`；证明页集合必须等于声明范围 `[1, declared_pages]`，而不仅等于已登记 attempt 页集合。理由：E1 只看数据库已登记页——源端声明两页、采集只登记第一页时，`proof_pages` 与 `expected_pages` 都是 `{1}`，接口仍写入 `evidence_sufficient=1` 版本，虽然原体已证明整个请求范围未取完。已登记集合不是应有范围。
+2. **F2 合法空是组合条件**：共享解析器计算 `is_legal_empty`（仅第一页、pages 为 0 或 1、data=[]、count 为 0 或缺失）；`pages=0` 非空、多页首空、非首空一律诊断失败；合法空不再提前跳过数据/计数核对。理由：E2 只放宽了 pages=0 的下界，没验证空的必要条件——pages=0/count=1/data 非空、多页早空/非首空都被对账判为干净。
+3. **F3 原体内容取代 metadata 自述计数**：实际行数取原体 `len(data)`/`len(diff)`，逐页与 `snapshot.record_count` 对照，再用于单元总数一致性检查；财务与股票发现的每个元素必须为对象。写入路径与只读对账共用同一份 `ParsedEnvelope` 结果（新增 `fin_feature/storage/envelope.py`），Repository 消费结果拒绝不完整写入，audit 消费同规则输出只读诊断。理由：原实现计算了 `data_rows` 却仍用 metadata 的 `record_count` 汇总——原体两行、metadata 一行时 `count` 与 `record_count` 两个相同错误值互相作证；`data=[7]`/`diff=[7]` 非对象元素也被接受。
+
+**验证办法**：全量离线 420 项通过（R1-R8 回归 26 + C1-C4 回归 16 + D1-D3 回归 10 + E1-E3 回归 11 + F1-F3 回归 14）；反例脚本 R1-R8/C1-C4/D1-D3/E1-E3 全部关闭，F1-F3 共 7 组反例均按预期抛错（缺陷被阻断）。
+
+### 2B-1 复审通过记录（架构与审阅 agent，2026-10-17）
+
+固定 `0710d8d` 复审通过：F1-F3 已关闭，此前整改保持有效，未发现新的阻断项；离线 420 passed、11 deselected，独立验收 28 组全部通过。审阅报告、复现脚本及结果在分支 `docs/review-stage2b1-0710d8d`（commit `1ce764a`）。本记录只表示 2B-1 可以收尾合入，不含 2B-2/2B-3 验收，也未合并 main 或升级真实库。
+
+### 2B-2 实施记录（实现 agent，2026-10-17；状态：待独立审阅）
+
+**基准与结果**：基准 `0710d8d`（2B-1 复审通过头）；实现 `817a8e6`、测试 `f76e26d`，文档随本批提交。验证结果针对实现+测试两提交的代码状态。
+
+在 DEC-006 已采纳的契约内，实现方对契约未逐条指定之处做了以下选择，供审阅与后续批次复用：
+
+1. **H1 与投影延迟**：`create_statement_version` 新增 `observed_at`（版本行与首次/重复观察均使用该响应真实接收 UTC，不落本地提交时间）与 `defer_projection`；协调器在全部行写入后，于同一业务事务内按阶段一 `dedup.sort_key` 合并历史候选重建唯一当前投影。理由：按到达顺序翻转投影会让后续批次只返回的旧公告降级覆盖已知新版；A→B→A 的恢复也能由优先的 A 观察支持。
+2. **请求身份与范围**：`http_attempt` 每页从 1 开始，`max_retries` 表示最大尝试总次数（含第一次）；网络无响应与 HTTP 非 2xx 可重试，业务/解码/结构/存储错误不重试。`request_scope` 只含 endpoint 路径（去敏）、report_name、columns、实际 filters/sort、page_size、recent_periods、mapping_version；页号与重试号不入范围摘要。理由：单位身份是逻辑请求范围，不应随分页/重试分叉。
+3. **证据先行**：收到响应立即读取 `response.content` 发布 gzip 文件并登记 pending snapshot（短事务）；只有 HTTP 状态、JSON 解码与信封结构都通过后才把 snapshot 标 valid、attempt 结算 ok。失败响应同样保留原体与 attempt；存储错误立即终止，不用重试掩盖。理由：契约要求失败/重试 body 可追溯，且终态失败的响应不能凭 valid 标志冒充充分证据。
+4. **分页完整性**：`pages`、`count`、每页原体行数与行对象性共同校验；多页空页、页数变化、count 变化、合计行数不符均失败；合法空只允许第一页且 pages 0/1、data=[]、count 0/缺失。预知页数超过 `max_pages_per_unit` 时先保留首响应再以 `incomplete_scope` 失败。理由：不能把截断或部分页当成功，也不能用 metadata 自述替代原体。
+5. **选值复用阶段一规则**：`dedup.sort_key`（规范化公告日 → entry_time → 确定内容摘要）同时用于单元内写入顺序与跨批次投影重建；NULL 公告不借 `fetched_at` 取胜；并列时按内容摘要、再按 `version_id` 确定性选取并写 `dedup_ambiguous` 日志。理由：避免阶段一与阶段二两套排序漂移（B1/B26）。
+6. **兼容 raw**：完整成功后按选值键升序写 `raw_*`。公告非空时 `INSERT OR REPLACE`（与阶段一同主键语义）；公告为 NULL 时按 `(secucode, report_date)` 下同一映射内容（排除 `crawled_at`）复用既有行、内容变化新增，不删除历史。兼容 raw 写原计量（含 inf），版本 `raw_fields` 对非有限值使用可逆字符串标记。理由：SQLite 复合主键允许 NULL 重复，直接插入会让空公告重复抓取无限增长。
+7. **事务与失败结算**：协调器拥有 run 生命周期，入口若已有活动外层事务则在任何 GET 前拒绝（`active_transaction`）；网络请求期间不持写锁；文件/attempt/snapshot 各自短事务；业务写（兼容 raw、版本、观察、当前投影、水位、unit 成功状态与计数）同一 UOW；失败整体回滚后另起短事务标 failed（状态写入失败则保留 running 供对账）；run 终态从已持久化 unit 状态汇总，内存计数只在 UOW 成功提交后采用。理由：SQLite/文件不能真实同事务，不能让部分业务写入被成功计数掩盖。
+8. **标准化与可比性分离**：固定 `FIELD_UNITS`，不消费运行时 fixture 单位覆盖（与 2A 迁移同口径，保证同内容版本哈希一致）；未知单位返回 None 并记录 `unknown_unit`，非有限值记录 `invalid_value`；`evidence_sufficient=1` 只说明证据充分，不自动把 `consolidate_scope`/`period_basis`/`currency`/`amount_unit` 从 unknown 提升。理由：单位与可比性未验证时不能靠证据等级替代口径核验。
+9. **行定位重建**：`UnitEvidence.row_verifier` 由协调器用本次分页内存行按 `(snapshot_id, row_index)` 重建映射与标准值，与写入值不一致即拒绝；不在 Repository 内重新抓取或猜测页归属。理由：证明强度取决于真实的原页重建，而非调用方声明。
+10. **纯内存预检**：公司不符、报告期不可规范化、字段映射失败在业务写入前判完整单元失败，不做"跳过坏行后报成功"。理由：新财务行属于请求公司是单元契约的一部分，静默跳行会让完整成功的含义漂移。
+
+**代价与边界**：协调器只覆盖财务三表；股票发现证据化接线、两条 CLI、退出码与全矩阵留给 2B-3。失败/重试原体与 attempt 不回滚、不自动删除，恢复/GC 另立契约。标准化沿用迁移口径会把可数值化的标识字段（如 `security_code`）纳入标准化字段，这是与既有版本哈希保持一致的取舍，若未来要收紧需同时迁移哈希。本批只跑临时库与脚本化 HTTP，未联网、未升级真实数据库。
+
+**验证办法**：`tests/test_capture_pagination.py`（22 项，B16-B22/B24）与 `tests/test_ingestion_coordinator.py`（33 项，B18/B23-B33/H1/R1-R3）覆盖重试与失败证据、分页完整性、存储失败终止、最近 N 期、版本/观察/投影、NULL 公告与歧义、单位/非有限值、逐写入点回滚、真实提交失败、外层事务拒绝与真实接收 UTC；全量离线 475 项通过。场景到用例映射见 [2B 验收矩阵](stage-2/2b-test-matrix.md)。
+
+### 2B-2 复审整改记录（实现 agent，2026-10-17；状态：待新 head 复审）
+
+固定 `9277eeb` 复审发现 2 P1 + 1 P2；H1 已由审阅方独立验证关闭。整改选择：
+
+1. **R1 提交失败必须回滚**：最外层 `_UnitOfWork` 的 `commit()` 抛错时立即 `rollback()` 并保留原异常。若回滚也失败，置 `Repository.transaction_broken`，协调器停止后续单元与 run 终态写入，返回 failed 而不读取可能未提交的数据；终态写入失败同样返回 failed。理由：旧实现在 commit 失败后连接停留在未提交事务，单元被读成 success 并汇总为 run success/0。
+2. **R2 兼容 raw 同键比较**：非空公告的同主键覆盖不再无条件 `INSERT OR REPLACE`，而是先与已持久化行按阶段一选值键比较，仅在新记录不早于既有行时覆盖。理由：修复版本投影未保护实际 clean/features 消费路径；同公告日较旧 entry 后到会降级当前值。
+3. **R3 选值前统一规范化**：`_selection_key`、`_rebuild_projection` 与兼容 raw 同键比较都先规范化 `report_date`/`notice_date` 再调用 `sort_key`。理由：报告期参与内容摘要，原始格式差异会让“复用同一 sort_key”仍选出与阶段一不同的记录。版本 `raw_fields` 与兼容 raw 保留原始日期证据。
+
+**代价与边界**：外部读锁持续存在时，失败结算与 run 终态无法落盘——接口返回 failed，数据库保留 running 供对账识别，不等待/重试外部锁。兼容 raw 不同报告期原始格式仍保留为独立主键，由阶段一按规范化报告期去重。
+
+**验证办法**：`tests/test_ingestion_coordinator.py` 新增 6 项（R1 真实 SQLite 锁提交失败、commit+rollback 双失败、R2 同公告日跨批次、R3 混合格式正逆序与跨批次），B31 改为真实 `commit()` 抛错；全量离线 475 项通过。
+
+### 2B-2 R1-R3 独立复审（2026-10-17；剩余 R2 待整改）
+
+固定 `be4908d`：R1 提交失败回滚、双失败停止、run 终态失败非零已独立验证；R3 日期摘要口径原反例关闭。R2 仅关闭双方 entry 明确的路径，完整历史候选比较仍有缺口，见 [复审报告](reviews/stage2b-2-be4908d.md)。475 项离线测试通过，9 组独立观察断言完成，仍暂不验收 2B-2。
+
+R2 的同键比较不能用 incoming 字段集合裁剪历史记录：新响应缺失的 entry_time 是本次未知，不能使已有有效 entry_time 也变成未知。null/缺 EITIME 两种实测都让兼容 raw/阶段一变为 1.0，而版本当前保留 200。继续按 DEC-006 完整规范化候选规则整改，保留原体与所有观察；不以复制历史 entry 到新观察的方式制造证据。2B-3 待该 P1 闭环后开始。
+
+### 2B-2 R2 用户授权直接修复（2026-10-17；状态：实施、自验证完成）
+
+用户在复审过程中授权本 agent 直接代码工作；基准 `be4908d`，代码 `d5adbe4`，分支 `fix/stage2b2-entry-evidence`。兼容 raw 选值改为完整历史候选比较：使用 dict(existing_row)，只把本次缺失看作未知，不删除已有候选字段，也不把旧 entry_time 补写进新观察。选择只改变比较输入，保留已验收排序函数、原体/原计量与事务边界。
+
+新增 null/缺字段/空字符串端到端回归，原失败反例先红后绿；478 项离线测试、9 组闭环脚本通过，详见 [交付说明](reviews/stage2b-2-entry-evidence-fix.md)。保留修复前独立复审快照；本次修复后是同一 agent 自验证，待用户 MR 流程审阅合入，不伪称由第二位审阅人验收。无真实库升级，2B-3 未开始。

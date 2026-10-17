@@ -19,6 +19,8 @@ from fin_feature.storage.migrations import run_migrations
 from fin_feature.storage.repository import Repository
 from fin_feature.features.standardize import set_unit_override, clear_unit_overrides
 
+from evidence_helpers import EvidenceEnv
+
 
 @pytest.fixture
 def db_conn():
@@ -392,20 +394,25 @@ class TestR5EvidenceConsistency:
         with pytest.raises(ValueError, match="报表不一致"):
             _make_version(repo, snapshot_id=snap, run_id=run, evidence_sufficient=1)
 
-    def test_consistent_snapshot_accepted(self, db_conn):
-        """R5：来源/公司/报表一致的 snapshot 被接受。"""
-        conn, repo = db_conn
-        run = repo.create_ingest_run("eastmoney")
-        snap = repo.save_raw_snapshot(
-            run, "eastmoney", "RPT_LICO_FN_CPD", "000001.SZ", 1,
-            "{}", "a" * 64, "/tmp/x.json.gz", 1,
-        )
-        vid = _make_version(repo, snapshot_id=snap, run_id=run, evidence_sufficient=1)
+    def test_consistent_snapshot_accepted(self, db_conn, tmp_path):
+        """R5：来源/公司/报表一致、且 v4 证据齐备的 snapshot 被接受。
+
+        2B 起 evidence_sufficient=1 需要真实临时文件、已校验页与单元完整性证明，
+        因此本 fixture 改为真实证据环境（保留原断言，不弱化）。
+        """
+        conn, _repo = db_conn
+        env = EvidenceEnv(conn=conn, raw_root=str(tmp_path / "raw"))
+        run = env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(unit, rows=[{"TOTAL_OPERATE_INCOME": 100}])
+
+        vid = env.create_version(unit, captured, evidence_sufficient=1)
         row = conn.execute(
-            "SELECT evidence_sufficient FROM statement_version WHERE version_id=?",
+            "SELECT evidence_sufficient, run_id FROM statement_version WHERE version_id=?",
             (vid,),
         ).fetchone()
-        assert row[0] == 1
+        assert row["evidence_sufficient"] == 1
+        assert row["run_id"] == run
 
     def test_default_insufficient_without_snapshot(self, db_conn):
         """R5：无 snapshot 时默认 evidence_sufficient=0。"""
@@ -911,15 +918,15 @@ class TestA4RunConsistency:
         with pytest.raises(ValueError, match="采集批次不一致"):
             _make_version(repo, snapshot_id=snap, run_id=run_b, evidence_sufficient=1)
 
-    def test_run_match_accepted(self, db_conn):
-        """A4：快照 run A + 版本 run A → 接受。"""
-        conn, repo = db_conn
-        run = repo.create_ingest_run("eastmoney")
-        snap = repo.save_raw_snapshot(
-            run, "eastmoney", "RPT_LICO_FN_CPD", "000001.SZ", 1,
-            "{}", "a" * 64, "/tmp/x.json.gz", 1,
-        )
-        vid = _make_version(repo, snapshot_id=snap, run_id=run, evidence_sufficient=1)
+    def test_run_match_accepted(self, db_conn, tmp_path):
+        """A4：快照 run A + 版本 run A → 接受（真实临时文件证据）。"""
+        conn, _repo = db_conn
+        env = EvidenceEnv(conn=conn, raw_root=str(tmp_path / "raw"))
+        run = env.new_run()
+        unit = env.new_unit()
+        captured = env.capture(unit, rows=[{"TOTAL_OPERATE_INCOME": 100}])
+
+        vid = env.create_version(unit, captured, evidence_sufficient=1)
         row = conn.execute(
             "SELECT run_id FROM statement_version WHERE version_id=?", (vid,)
         ).fetchone()

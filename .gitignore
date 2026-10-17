@@ -17,6 +17,9 @@ htmlcov/
 *.db-shm
 *.sqlite
 *.sqlite3
+# 采集原始证据（默认 data/raw；自定义 raw_store.root 也不得被 Git 跟踪）
+*.body.gz
+*.db.backup-*
 # Credentials and local settings
 .env
 .env.*

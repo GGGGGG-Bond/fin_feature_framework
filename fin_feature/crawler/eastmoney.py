@@ -8,10 +8,38 @@
 filter 参数必须 URL 编码（requests 的 params 自动处理）。
 """
 
-from fin_feature.crawler.base import BaseCrawler, CrawlerError
+from fin_feature.crawler.base import BaseCrawler, CrawlerError, build_filter_string
 from fin_feature.utils.logger import setup_logger
 
 logger = setup_logger("fin_feature.crawler.eastmoney")
+
+
+def build_data_params(
+    *,
+    report_name: str,
+    page_number: int,
+    page_size: int,
+    filters: dict | None = None,
+    columns: str = "ALL",
+    sort_columns: str = "REPORTDATE",
+    sort_types: str = "-1",
+) -> dict:
+    """构造 datacenter-web 单页请求参数（旧路径与新证据路径共用）。
+
+    参数只含业务字段；Cookie/Authorization 等请求头不进入快照 request_params。
+    """
+    params = {
+        "reportName": report_name,
+        "columns": columns,
+        "pageSize": str(page_size),
+        "pageNumber": str(page_number),
+        "sortColumns": sort_columns,
+        "sortTypes": sort_types,
+    }
+    filter_str = build_filter_string(filters)
+    if filter_str:
+        params["filter"] = filter_str
+    return params
 
 
 class EastMoneyCrawler(BaseCrawler):
@@ -27,18 +55,14 @@ class EastMoneyCrawler(BaseCrawler):
         sort_types: str = "-1",
     ) -> dict:
         """获取单页数据。返回原始 JSON 响应 dict。"""
-        params = {
-            "reportName": report_name,
-            "columns": "ALL",
-            "pageSize": str(page_size or self.page_size),
-            "pageNumber": str(page_number),
-            "sortColumns": sort_columns,
-            "sortTypes": sort_types,
-        }
-        filter_str = self._build_filter_string(filters)
-        if filter_str:
-            params["filter"] = filter_str
-
+        params = build_data_params(
+            report_name=report_name,
+            page_number=page_number,
+            page_size=page_size or self.page_size,
+            filters=filters,
+            sort_columns=sort_columns,
+            sort_types=sort_types,
+        )
         data = self._request_with_retry(self.base_url, params)
         return data
 
