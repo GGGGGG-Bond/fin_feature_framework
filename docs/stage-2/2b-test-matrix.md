@@ -240,3 +240,15 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/test_capture_paginati
 | R3 | `test_r3_mixed_report_date_formats_use_one_selection_rule`（正序/逆序参数化：当前版本、兼容 raw、阶段一选值一致，版本保留原始日期）；`test_r3_cross_batch_mixed_format_matches_stage1`（跨批次历史候选同口径） |
 
 验证命令与 2B-2 相同；整改后全量 475 passed、11 deselected，专项 55 passed。
+
+## be4908d 独立复审（2026-10-17）
+
+实跑 475 passed、11 deselected，2B-1 原测试保持；[报告](../reviews/stage2b-2-be4908d.md)、[脚本](../reviews/stage2b-2-be4908d-repro.py)、[9 组结果](../reviews/stage2b-2-be4908d-results.json)。B31 的实际 COMMIT 失败、commit+rollback 双失败后停止下一单元/不结算 run，以及 run 终态提交失败均明确断言通过；R3 原反例选值三处一致。
+
+B26/R2 仍有未覆盖路径：同公告日次批 EITIME=null 或不提供时，历史 entry_time 从比较输入消失，兼容 raw/实际 deduplicate 降为 1.0、版本当前仍为 200。已有 R2 双方 entry 明确的用例通过不足以验收完整规则；需两变体断言 200 和保留历史 entry，并继续保留新明确修订升级与回滚对照。2B-2 剩余 1 P1，暂不进入 2B-3。
+
+## d5adbe4 直接修复与自验证（2026-10-17）
+
+用户授权本 agent 修复 R2；[交付](../reviews/stage2b-2-entry-evidence-fix.md)、[闭环脚本](../reviews/stage2b-2-entry-evidence-acceptance.py)、[结果](../reviews/stage2b-2-entry-evidence-results.json)。全量 478 passed、11 deselected；代码提交上 9 组闭环通过，R1/R2/R3 均按修复后预期断言。
+
+B26/R2 新增 `test_ingestion_coordinator.py::test_r2_missing_entry_keeps_full_historical_selection_evidence` 的 null、absent、empty 三个参数：具体断言三条消费路径一致、历史 entry 保留、明确新修订可升级、未知观察不伪造 entry、原始 body 不变、重复内容版本复用、UTC 与重连持久化。修复前 null/absent 明确失败，修复后全通过。旧 be4908d 复现脚本只记录历史缺陷，应在该固定头运行；修复后使用本节闭环脚本。R2 由同一 agent 实施自验证，未冒充另一 agent 独立复审；B34-B46/2B-3 不在本批。
