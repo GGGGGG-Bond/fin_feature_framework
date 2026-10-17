@@ -337,6 +337,12 @@ def main() -> None:
     rc.add_argument("--rel-tol", default="0.000001", help="相对容差，默认 0.000001")
     from fin_feature.reconcile import cmd_reconcile
 
+    ss = sub.add_parser("source-sample", help="限量采集东方财富/新浪年报并输出核验报告（不写业务库）")
+    ss.add_argument("--secucode", required=True, help="单家公司，如 600519.SH")
+    ss.add_argument("--report-date", action="append", required=True, help="年末报告期，可指定一至两次")
+    ss.add_argument("--output-dir", required=True, help="必须不存在的新目录，保留原体及报告")
+    from fin_feature.source_sample import cmd_source_sample
+
     args = parser.parse_args()
 
     commands = {
@@ -349,6 +355,7 @@ def main() -> None:
         "audit-raw": cmd_audit_raw,
         "replay": cmd_replay,
         "reconcile": cmd_reconcile,
+        "source-sample": cmd_source_sample,
     }
     result = commands[args.command](args)
     # 传播退出码（None 视为成功）
