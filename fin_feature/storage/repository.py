@@ -1587,6 +1587,113 @@ class Repository:
                 page["file_path"], page["raw_content_hash"], page["raw_bytes"]
             )
 
+        # F1/F2/F3：与 audit 共用同一份信封解析结果，验证原体声明范围与内容。
+        # F1：证明必须覆盖源端声明的全部页范围，不能只覆盖已登记页。
+        # E1 只能发现调用方遗漏一个已存在的失败页，却发现不了采集未继续到下一页的情况。
+        # 从已核验原体取得源端声明 pages，proof 页、持久化最终页和声明范围必须一致。
+        from fin_feature.storage.envelope import parse_envelope
+        if self.raw_store is not None:
+            page_envelopes: dict[int, object] = {}
+            for page_snapshot_id in page_ids:
+                page = self.get_snapshot(page_snapshot_id)
+                page_attempt = self.get_attempt(page["attempt_id"])
+                page_number = page_attempt["page_number"]
+                body = self.raw_store.verify({
+                    "file_path": page["file_path"],
+                    "raw_hash": page["raw_content_hash"],
+                    "raw_bytes": page["raw_bytes"],
+                }).body
+                envelope = parse_envelope(body, unit["unit_kind"])
+                if envelope.error is not None:
+                    raise ValueError(
+                        f"单元页证据 {page_snapshot_id} 信封解析失败：{envelope.error}"
+                    )
+                # F3：非对象元素拒绝——仅"最外层是 list"不满足契约
+                if not envelope.all_rows_objects:
+                    raise ValueError(
+                        f"单元页证据 {page_snapshot_id} 原体 data/diff 含非对象元素"
+                    )
+                # F3：原体行数与 metadata record_count 对照——两个相同错误值不能互相作证
+                if (
+                    envelope.data_rows is not None
+                    and page["record_count"] is not None
+                    and envelope.data_rows != int(page["record_count"])
+                ):
+                    raise ValueError(
+                        f"单元页证据 {page_snapshot_id} 原体行数 {envelope.data_rows} "
+                        f"与快照 record_count {page['record_count']} 不一致"
+                    )
+                page_envelopes[page_number] = envelope
+            # 股票发现不分页（pages 固定 1），跳过声明范围覆盖检查
+            if unit["unit_kind"] == "financial" and page_envelopes:
+                declared_pages_set = {env.pages for env in page_envelopes.values()}
+                if len(declared_pages_set) != 1:
+                    raise ValueError(
+                        f"单元各页声明的总页数不一致：{sorted(declared_pages_set)}"
+                    )
+                declared_pages = declared_pages_set.pop()
+                if declared_pages == 0:
+                    # F2：pages=0 必须是合法空（单页、data=[]、count 为 0 或缺失）
+                    env = next(iter(page_envelopes.values()))
+                    if proof_pages != {1} or not env.is_legal_empty:
+                        raise ValueError(
+                            f"单元声明 pages=0 但不满足合法空条件"
+                            f"（证明页 {sorted(proof_pages)}，data_rows={env.data_rows}，"
+                            f"count={env.count}）：合法空要求单页、data=[] 且 count 为 0 或缺失"
+                        )
+                elif declared_pages == 1:
+                    # F2：单页空响应必须是合法空；非空则正常单页
+                    env = next(iter(page_envelopes.values()))
+                    if proof_pages != {1}:
+                        raise ValueError(
+                            f"单元声明 pages=1，但证明页 {sorted(proof_pages)}"
+                            f"（单页单元只允许页 [1]）"
+                        )
+                    if env.data_rows == 0 and not env.is_legal_empty:
+                        raise ValueError(
+                            f"单元声明 pages=1 但空数据不满足合法空条件"
+                            f"（count={env.count}）：合法空要求 count 为 0 或缺失"
+                        )
+                else:
+                    expected_declared = set(range(1, declared_pages + 1))
+                    if proof_pages != expected_declared:
+                        missing = sorted(expected_declared - proof_pages)
+                        extra = sorted(proof_pages - expected_declared)
+                        detail = []
+                        if missing:
+                            detail.append(f"遗漏声明页 {missing}")
+                        if extra:
+                            detail.append(f"范围外页 {extra}")
+                        raise ValueError(
+                            f"单元完整性证明未覆盖源端声明的全部页范围"
+                            f"（{', '.join(detail)}）：证明页 {sorted(proof_pages)}，"
+                            f"源端声明 {declared_pages} 页"
+                        )
+                    # F2：多页场景下任一页 data=[] → 不完整
+                    for pn, env in page_envelopes.items():
+                        if env.data_rows == 0:
+                            raise ValueError(
+                                f"单元页 {pn} 原体 data 为空：多页场景下空页不满足完整性"
+                            )
+                # F3：已知 count 必须等于全部声明页原体行数之和
+                known_counts = {
+                    env.count for env in page_envelopes.values() if env.count is not None
+                }
+                if len(known_counts) > 1:
+                    raise ValueError(
+                        f"单元各页声明的总记录数不一致：{sorted(known_counts)}"
+                    )
+                if known_counts:
+                    total_body_rows = sum(
+                        env.data_rows or 0 for env in page_envelopes.values()
+                    )
+                    declared_count = known_counts.pop()
+                    if declared_count != total_body_rows:
+                        raise ValueError(
+                            f"单元声明总记录数 count={declared_count}，"
+                            f"但原体行数合计 {total_body_rows}"
+                        )
+
         if row_index is None:
             raise ValueError(
                 "新证据必须给出 row_index（来源行定位）：无法定位的行不能声明证据充分"
