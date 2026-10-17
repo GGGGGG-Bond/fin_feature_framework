@@ -17,8 +17,9 @@ class _UnitOfWork:
     使嵌套的 unit_of_work 能通过 conn.in_transaction 检测到外层事务并使用 savepoint。
     """
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection, repository=None):
         self._conn = conn
+        self._repository = repository
         self._savepoint: str | None = None
 
     def __enter__(self) -> "_UnitOfWork":
@@ -40,12 +41,25 @@ class _UnitOfWork:
             else:
                 self._conn.execute(f"ROLLBACK TO SAVEPOINT {self._savepoint}")
                 self._conn.execute(f"RELEASE SAVEPOINT {self._savepoint}")
-        else:
-            # 最外层：提交或回滚整个事务
-            if exc_type is None:
+        elif exc_type is None:
+            # 最外层：提交失败时必须回滚本事务并保留原异常。否则连接会停留在
+            # 未提交事务中，调用方可能继续读到尚未落盘的 success 状态。
+            try:
                 self._conn.commit()
-            else:
-                self._conn.rollback()
+            except BaseException:
+                self._rollback_outer()
+                raise
+        else:
+            # 最外层：回滚整个事务
+            self._rollback_outer()
+
+    def _rollback_outer(self) -> None:
+        """回滚最外层事务；无法恢复连接状态时标记仓库，供调用方终止运行。"""
+        try:
+            self._conn.rollback()
+        except Exception:
+            if self._repository is not None:
+                self._repository.transaction_broken = True
 
 
 def utc_now_iso() -> str:
@@ -57,6 +71,22 @@ def utc_now_iso() -> str:
 
 def _is_positive_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _selection_sort_key(record: dict) -> tuple:
+    """按阶段一 deduplicate 口径规范化日期后取 sort_key。
+
+    阶段一在分组前把 report_date/notice_date 规范化为 YYYY-MM-DD，再计算
+    notice_date → entry_time → 内容摘要。兼容 raw 的同键覆盖必须用同一口径，
+    否则仅调用同一 sort_key 仍会因报告期格式不同而选出不同行（2B-2 复审 R3）。
+    """
+    from fin_feature.cleaning.dedup import sort_key
+    from fin_feature.utils.date_utils import normalize_date
+
+    normalized = dict(record)
+    normalized["report_date"] = normalize_date(record.get("report_date")) or ""
+    normalized["notice_date"] = normalize_date(record.get("notice_date")) or ""
+    return sort_key(normalized)
 
 
 class Repository:
@@ -73,6 +103,9 @@ class Repository:
         self.conn = conn
         self.raw_store = raw_store
         self._table_columns_cache: dict[str, set[str]] = {}
+        # 2B-2 复审 R1：最外层提交失败且回滚也失败时置位；协调器据此终止运行，
+        # 不再依据可能未提交的数据统计成功。
+        self.transaction_broken = False
 
     def _get_table_columns(self, table: str) -> set[str]:
         """获取表的列名集合（带缓存）。"""
@@ -96,7 +129,7 @@ class Repository:
                 repo.batch_upsert_raw(...)
                 repo.update_watermark(...)
         """
-        return _UnitOfWork(self.conn)
+        return _UnitOfWork(self.conn, self)
 
     def commit(self) -> None:
         """显式提交当前事务。"""
@@ -147,12 +180,13 @@ class Repository:
     def upsert_compat_raw(self, table_suffix: str, records: Iterable[dict]) -> int:
         """兼容 raw 写入：保留原计量，供阶段一 clean/features 继续消费。
 
-        - notice_date 非空：INSERT OR REPLACE，与阶段一同主键语义一致；调用方按
-          阶段一选值顺序（dedup.sort_key 升序）传入，最终当前行即最新公告。
+        - notice_date 非空：同主键已存在时按阶段一选值口径比较；仅当新记录
+          不早于既有行才覆盖。这样后续批次只返回同公告日的较旧 entry 时，
+          兼容 raw 不会被降级（2B-2 复审 R2）。
         - notice_date 为空：SQLite 复合主键允许 NULL 重复，须按
           (secucode, report_date, 公告为空) 比较同一映射内容（排除 crawled_at），
           相同内容复用既有行，不同内容保留为新行；不因幂等删除既有历史。
-        返回实际写入行数（空公告同内容复用不计）。
+        返回实际写入行数（未覆盖/同内容复用不计）。
         """
         rows = list(records)
         if not rows:
@@ -173,6 +207,18 @@ class Repository:
                 ).fetchall()
                 if any({c: row[c] for c in cols} == incoming for row in existing):
                     continue
+            else:
+                existing_row = self.conn.execute(
+                    f"SELECT * FROM {table} "
+                    "WHERE secucode = ? AND report_date = ? AND notice_date = ?",
+                    (incoming.get("secucode"), incoming.get("report_date"),
+                     incoming.get("notice_date")),
+                ).fetchone()
+                if existing_row is not None:
+                    existing = {c: existing_row[c] for c in cols}
+                    if _selection_sort_key(existing) > _selection_sort_key(incoming):
+                        # 后续批次只带回同公告日的较旧记录：保留既有当前行
+                        continue
             placeholders = ", ".join(f":{c}" for c in cols)
             col_list = ", ".join(cols)
             self.conn.execute(

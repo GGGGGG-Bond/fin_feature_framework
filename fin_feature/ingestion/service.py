@@ -131,12 +131,23 @@ def _standardize_row(raw_record: dict) -> tuple[dict, list[dict]]:
     return normalize_numeric(filtered), safe_diagnostics
 
 
+def _selection_record(raw_fields: dict, notice_date, entry_time) -> dict:
+    """构造阶段一选值口径的记录：先规范化报告期与公告日，再交给 sort_key。
+
+    阶段一 deduplicate 在分组前把 report_date/notice_date 规范化为 YYYY-MM-DD；
+    报告期参与内容摘要，若保留原始格式（如 ``2024/03/31`` 与 ``2024-03-31``），
+    仅复用同一 sort_key 仍会选出不同记录（2B-2 复审 R3）。
+    """
+    record = dict(raw_fields)
+    record["report_date"] = normalize_date(record.get("report_date")) or ""
+    record["notice_date"] = normalize_date(notice_date) or ""
+    record["entry_time"] = entry_time or ""
+    return record
+
+
 def _selection_key(row: _PreparedRow) -> tuple:
-    """阶段一选值键：规范化公告日 → entry_time → 确定内容摘要。"""
-    record = dict(row.raw_fields)
-    record["notice_date"] = row.notice_date or ""
-    record["entry_time"] = row.entry_time or ""
-    return sort_key(record)
+    """阶段一选值键：规范化报告期/公告日 → entry_time → 确定内容摘要。"""
+    return sort_key(_selection_record(row.raw_fields, row.notice_date, row.entry_time))
 
 
 class FinancialIngestionCoordinator:
@@ -222,6 +233,8 @@ class FinancialIngestionCoordinator:
 
         results: list[UnitResult] = []
         for unit_id, spec in plan.values():
+            if self.repository.transaction_broken:
+                break
             unit_row = self.repository.get_unit(unit_id)
             if unit_row["status"] in ("success", "success_empty"):
                 results.append(UnitResult(
@@ -237,8 +250,23 @@ class FinancialIngestionCoordinator:
                 continue
             results.append(self._ingest_unit(unit_row, spec))
 
-        with self.repository.unit_of_work():
-            summary = self.repository.finalize_run(run_id)
+        if self.repository.transaction_broken:
+            # 提交失败且回滚失败：连接停在不可恢复的事务中，不能继续读取
+            # 未提交的 unit 状态宣称成功，也不能在该连接上再写 run 终态。
+            logger.error(
+                "运行 %s 的连接事务无法恢复，终止后续单元与 run 结算；"
+                "run 保持 running 供对账识别", run_id,
+            )
+            return self._failed_run_result(run_id, plan, results)
+
+        try:
+            with self.repository.unit_of_work():
+                summary = self.repository.finalize_run(run_id)
+        except Exception as exc:  # noqa: BLE001 - 运行边界：不能据此宣称成功
+            # 例如提交失败后外部读锁仍阻塞终态写入：返回 failed，run 保持
+            # running 供对账，不能把未写入的终态报告为成功。
+            logger.exception("运行 %s 终态写入失败：%s", run_id, exc)
+            return self._failed_run_result(run_id, plan, results)
 
         return RunResult(
             run_id=run_id,
@@ -248,6 +276,26 @@ class FinancialIngestionCoordinator:
             success=summary["success"],
             failed=summary["failed"],
             incomplete=summary["incomplete"],
+            units=tuple(results),
+        )
+
+    @staticmethod
+    def _failed_run_result(
+        run_id: str, plan: dict, results: list[UnitResult]
+    ) -> RunResult:
+        """无法写入 run 终态时的失败汇总：只采用已返回的单元结果。"""
+        succeeded = sum(
+            1 for result in results
+            if result.status in ("success", "success_empty")
+        )
+        return RunResult(
+            run_id=run_id,
+            status="failed",
+            failed_units=len(plan) - succeeded,
+            total=len(plan),
+            success=succeeded,
+            failed=len(results) - succeeded,
+            incomplete=len(plan) - len(results),
             units=tuple(results),
         )
 
@@ -361,6 +409,10 @@ class FinancialIngestionCoordinator:
 
     def _mark_failed(self, unit_id: str, code: str, detail: str) -> None:
         """业务 UOW 已回滚后，用独立短事务标记失败；证据不回滚。"""
+        if self.repository.transaction_broken:
+            # 连接事务不可恢复：此时读到的状态可能尚未提交，不做结算写入
+            logger.error("单元 %s 无法标记失败：连接事务已不可恢复", unit_id)
+            return
         try:
             row = self.repository.get_unit(unit_id)
             if row is None:
@@ -576,15 +628,13 @@ class FinancialIngestionCoordinator:
             observations = repo.get_observations_for_version(version["version_id"])
             keys = []
             for observation in observations:
-                record = dict(raw_fields)
-                record["notice_date"] = normalize_date(observation["notice_date"]) or ""
-                record["entry_time"] = observation["entry_time"] or ""
-                keys.append(sort_key(record))
+                keys.append(sort_key(_selection_record(
+                    raw_fields, observation["notice_date"], observation["entry_time"]
+                )))
             if not keys:
-                record = dict(raw_fields)
-                record["notice_date"] = normalize_date(version["notice_date"]) or ""
-                record["entry_time"] = raw_fields.get("entry_time") or ""
-                keys.append(sort_key(record))
+                keys.append(sort_key(_selection_record(
+                    raw_fields, version["notice_date"], raw_fields.get("entry_time")
+                )))
             candidates.append((max(keys), version["version_id"]))
 
         ordered = sorted(candidates, key=lambda item: (item[0], item[1]), reverse=True)
