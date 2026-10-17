@@ -1,0 +1,136 @@
+{
+  "schema": "reference-review-summary-v1",
+  "planned_companies": 8,
+  "planned_pairs": 96,
+  "numeric_pairs": 84,
+  "numeric_pair_coverage": 0.875,
+  "reference_checked_pairs": 32,
+  "reference_match_pairs": 32,
+  "unreviewed_planned_pairs": 64,
+  "reference_coverage": 0.3333333333333333,
+  "counts": {
+    "match_reference": 32,
+    "unreviewed": 52,
+    "source_missing": 12
+  },
+  "companies": [
+    {
+      "secucode": "600519.SH",
+      "name": "贵州茅台",
+      "planned_pairs": 12,
+      "numeric_pairs": 12,
+      "reference_checked_pairs": 12,
+      "input_sha256": {
+        "eastmoney": "a2a103e2bfcc30e437cd1e3dea6d27f01f5254cf28accaf72feda4fd140d8782",
+        "sina": "696abe31b7e14145d747b95b1227cc1f56fc778e34890f78d0a3f9aaa19c039d"
+      },
+      "reference_match_pairs": 12,
+      "reference_sha256": "a37256176f82db8450caad2b8680cd3d1676d68006db785e86d4fa0f3df4275c",
+      "document": {
+        "url": "https://www.moutai.com.cn/mtgf/articleFileDir/2025-04/08/8055b7bed7db41bdbc617f4c9b9ec591.pdf",
+        "title": "贵州茅台2024年年度报告",
+        "sha256": "5299f4940e2ce4e91084b73dc457d558b9d335fa76fbfee6227e4254eb7f4a30"
+      }
+    },
+    {
+      "secucode": "000333.SZ",
+      "name": "美的集团",
+      "planned_pairs": 12,
+      "numeric_pairs": 12,
+      "reference_checked_pairs": 0,
+      "input_sha256": {
+        "eastmoney": "94414c7e558e1d690c2380ffa3f7995684d373277209a6b01d92fec51e828062",
+        "sina": "e02e160499f5d7c16751ecd0db8f2cfa16bfee9920c4a5cbdf7fc5652320f42d"
+      }
+    },
+    {
+      "secucode": "300750.SZ",
+      "name": "宁德时代",
+      "planned_pairs": 12,
+      "numeric_pairs": 12,
+      "reference_checked_pairs": 0,
+      "input_sha256": {
+        "eastmoney": "cfe933243862f2d514feb7e3c4153e72c7f4b117dd3d07ae1f85a58b83cacf03",
+        "sina": "8344a9f631b7c82faf848e3f433f07f9ef73be98041043ccfe1236e041685969"
+      }
+    },
+    {
+      "secucode": "600031.SH",
+      "name": "三一重工",
+      "planned_pairs": 12,
+      "numeric_pairs": 12,
+      "reference_checked_pairs": 0,
+      "input_sha256": {
+        "eastmoney": "228e2bc7ad260eb05b80f468f505e1d351a19226132e6dbd9a52568ee182e484",
+        "sina": "2ccc263c2c996aed234fa430a005b84afe949b1082be20323f8e6acb1710d2c2"
+      }
+    },
+    {
+      "secucode": "000002.SZ",
+      "name": "万科A",
+      "planned_pairs": 12,
+      "numeric_pairs": 12,
+      "reference_checked_pairs": 12,
+      "input_sha256": {
+        "eastmoney": "b94af851e52c574ce8644af7f567d19fa83158bc4e951e6241473d4368e2e7da",
+        "sina": "05643af092a162a9c894742309c52ad15dfcb48bcc7fd834000d7c7da75a915c"
+      },
+      "reference_match_pairs": 12,
+      "reference_sha256": "7fbe1a2c41c1859e82c49b45b89df6cb8f3df709a3ad3749a3bf82133b5ddf39",
+      "document": {
+        "url": "https://static.cninfo.com.cn/finalpage/2025-04-01/1222974139.PDF",
+        "title": "vanke 2024 annual report",
+        "sha256": "734370d32036c1a18716e42f2e96c0f6ffd8a48c1fe115ecda945a09eb416ac0"
+      }
+    },
+    {
+      "secucode": "600036.SH",
+      "name": "招商银行",
+      "planned_pairs": 12,
+      "numeric_pairs": 8,
+      "reference_checked_pairs": 0,
+      "input_sha256": {
+        "eastmoney": "f1268d2f4c03d57653b35bd5e8a568ab7f0dfc4afb370934a1ba448dd3e61980",
+        "sina": "08197df41f8c068d63f19a7b3a3dbb5744ee38eef259796c5a383a38ef72ebc2"
+      }
+    },
+    {
+      "secucode": "601318.SH",
+      "name": "中国平安",
+      "planned_pairs": 12,
+      "numeric_pairs": 8,
+      "reference_checked_pairs": 8,
+      "input_sha256": {
+        "eastmoney": "096187c4ef27ee8d722999dfe96fde8038d175a2039ae42655ed817efd4ca234",
+        "sina": "6570a2877ff93b9678854e3b29067e9ac9a854d7687ac2a9c0d56ae38cc5a50e"
+      },
+      "reference_match_pairs": 8,
+      "reference_sha256": "b749677b548d90feedf0555f52c639f09410b93d128a9acd41c44bc85f4fda01",
+      "document": {
+        "url": "https://www.pingan.com/app_upload/images/info/upload/eb52da50-5b94-4fb7-a7d5-a36500e8ed9d.pdf",
+        "title": "pingan 2024 annual report",
+        "sha256": "6ffff1cade59c64c8178494c083cac8a4011ef5ae2fed32f85dd488a64a809b2"
+      }
+    },
+    {
+      "secucode": "600030.SH",
+      "name": "中信证券",
+      "planned_pairs": 12,
+      "numeric_pairs": 8,
+      "reference_checked_pairs": 0,
+      "input_sha256": {
+        "eastmoney": "90dbdf914b2ca7210b91ae2181e5512d2ec5ba58139330febbf5614e4c09e11c",
+        "sina": "6ba4f551eb7686cfc0e20026cc9291d9f96030040b71da41dab987a32d88b67a"
+      }
+    }
+  ],
+  "errors": [],
+  "historical_visibility_verified": false,
+  "provider_revision_alignment_verified": false,
+  "upstream_independence_verified": false,
+  "business_db_written": false,
+  "scope": "numeric checks against manually reviewed official documents",
+  "exit_code": 1,
+  "snapshot_date": "2026-10-17",
+  "snapshot_note": "Dated real sample result, not a substitute for rerunning evidence verification."
+}

@@ -1,0 +1,137 @@
+{
+  "schema": "reviewed-reference-v1",
+  "coverage": "selected-fields",
+  "reviewed_by": "Codex manual PDF visual review, 2026-10-17",
+  "document": {
+    "url": "https://www.pingan.com/app_upload/images/info/upload/eb52da50-5b94-4fb7-a7d5-a36500e8ed9d.pdf",
+    "title": "pingan 2024 annual report",
+    "sha256": "6ffff1cade59c64c8178494c083cac8a4011ef5ae2fed32f85dd488a64a809b2"
+  },
+  "input_sha256": [
+    "096187c4ef27ee8d722999dfe96fde8038d175a2039ae42655ed817efd4ca234",
+    "6570a2877ff93b9678854e3b29067e9ac9a854d7687ac2a9c0d56ae38cc5a50e"
+  ],
+  "currency": "CNY",
+  "unit": "yuan",
+  "scope": "consolidated",
+  "source_units": {
+    "eastmoney": "yuan",
+    "sina": "yuan"
+  },
+  "absolute_tolerance": "0.01",
+  "review_note": "2024 report and its 2023 comparative columns; pinned numeric check only, no provider revision/as-of claim.",
+  "records": [
+    {
+      "secucode": "601318.SH",
+      "report_date": "2024-12-31",
+      "field": "total_assets",
+      "value": "12957827000000",
+      "document_value": "12957827",
+      "document_unit": "million_yuan",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 155,
+      "printed_page": 151,
+      "row_label": "资产总计",
+      "column_label": "2024年12月31日"
+    },
+    {
+      "secucode": "601318.SH",
+      "report_date": "2023-12-31",
+      "field": "total_assets",
+      "value": "11583417000000",
+      "document_value": "11583417",
+      "document_unit": "million_yuan",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 155,
+      "printed_page": 151,
+      "row_label": "资产总计",
+      "column_label": "2023年12月31日"
+    },
+    {
+      "secucode": "601318.SH",
+      "report_date": "2024-12-31",
+      "field": "total_liabilities",
+      "value": "11653115000000",
+      "document_value": "11653115",
+      "document_unit": "million_yuan",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 156,
+      "printed_page": 152,
+      "row_label": "负债合计",
+      "column_label": "2024年12月31日"
+    },
+    {
+      "secucode": "601318.SH",
+      "report_date": "2023-12-31",
+      "field": "total_liabilities",
+      "value": "10354453000000",
+      "document_value": "10354453",
+      "document_unit": "million_yuan",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 156,
+      "printed_page": 152,
+      "row_label": "负债合计",
+      "column_label": "2023年12月31日"
+    },
+    {
+      "secucode": "601318.SH",
+      "report_date": "2024-12-31",
+      "field": "total_equity",
+      "value": "1304712000000",
+      "document_value": "1304712",
+      "document_unit": "million_yuan",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 157,
+      "printed_page": 153,
+      "row_label": "股东权益合计",
+      "column_label": "2024年12月31日"
+    },
+    {
+      "secucode": "601318.SH",
+      "report_date": "2023-12-31",
+      "field": "total_equity",
+      "value": "1228964000000",
+      "document_value": "1228964",
+      "document_unit": "million_yuan",
+      "table_type": "BS",
+      "period_basis": "stock_end",
+      "page": 157,
+      "printed_page": 153,
+      "row_label": "股东权益合计",
+      "column_label": "2023年12月31日"
+    },
+    {
+      "secucode": "601318.SH",
+      "report_date": "2024-12-31",
+      "field": "parent_netprofit",
+      "value": "126607000000",
+      "document_value": "126607",
+      "document_unit": "million_yuan",
+      "table_type": "IS",
+      "period_basis": "flow_ytd",
+      "page": 159,
+      "printed_page": 155,
+      "row_label": "归属于母公司股东的净利润",
+      "column_label": "2024年度"
+    },
+    {
+      "secucode": "601318.SH",
+      "report_date": "2023-12-31",
+      "field": "parent_netprofit",
+      "value": "85665000000",
+      "document_value": "85665",
+      "document_unit": "million_yuan",
+      "table_type": "IS",
+      "period_basis": "flow_ytd",
+      "page": 159,
+      "printed_page": 155,
+      "row_label": "归属于母公司股东的净利润",
+      "column_label": "2023年度"
+    }
+  ]
+}
