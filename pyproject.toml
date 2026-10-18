@@ -1,6 +1,6 @@
 [project]
 name = "fin-feature-framework"
-version = "0.3.0"
+version = "0.3.1"
 description = "金融数据处理与特征工程框架：采集、清洗、特征生成与可追溯核验"
 requires-python = ">=3.12"
 dependencies = [

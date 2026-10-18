@@ -18,6 +18,7 @@ def verify(output):
         commands.append(dict(name=name,exit_code=result.returncode,expected_exit_code=expected))
         if result.returncode!=expected:
             raise RuntimeError(f'{name} exited {result.returncode}; see {output/(name+".log")}')
+    run('docs',['scripts/check_docs.py'])
     run('tests',['-m','pytest','tests/','-q','-p','no:cacheprovider','-m','not requires_network'])
     run('cli',['-m','fin_feature','--help'])
     run('showcase',['-m','examples.showcase_flow','--output-dir',str(output/'showcase')])

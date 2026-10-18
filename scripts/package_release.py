@@ -73,14 +73,16 @@ def start_page(version,commit,with_code):
 <p><a href="https://github.com/GGGGGG-Bond/fin_feature_framework/releases/tag/v'''+escape(version)+'''">固定版本下载</a> · <a href="https://github.com/GGGGGG-Bond/fin_feature_framework">Git历史与源码</a></p></html>'''
 
 
-def build_release(repo,output,brief_pdf,version='0.3.0'):
+def build_release(repo,output,brief_pdf,version=None):
     repo,output,brief_pdf=Path(repo).resolve(),Path(output).resolve(),Path(brief_pdf).resolve()
     if not sys.platform.startswith('linux'):raise ValueError('build on Linux/WSL')
     if not brief_pdf.is_file() or not brief_pdf.read_bytes().startswith(b'%PDF-'):raise ValueError('reviewed brief PDF required')
     def git(*args):return subprocess.check_output(['git',*args],cwd=repo,text=True).strip()
     commit=git('rev-parse','HEAD')
     if git('status','--porcelain'):raise ValueError('release requires a clean Git checkout')
-    if tomllib.loads((repo/'pyproject.toml').read_text())['project']['version']!=version:raise ValueError('version mismatch')
+    project_version=tomllib.loads((repo/'pyproject.toml').read_text())['project']['version']
+    if version is None:version=project_version
+    if project_version!=version:raise ValueError('version mismatch')
     output.mkdir(parents=True,exist_ok=False)
     prefix='fin-feature-framework-v'+version
     with tempfile.TemporaryDirectory(prefix='fin-release-') as scratch:

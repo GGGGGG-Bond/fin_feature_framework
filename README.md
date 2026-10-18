@@ -1,16 +1,24 @@
 # 财务数据处理与特征工程框架
 
-Python / SQLite / CLI：财务采集 → 清洗 → 12项特征 → 双源与正式财报核验 → 价格收益分组回测。
+Python / SQLite / CLI：公开财务采集 → 清洗 → 12项特征 → 双源与正式财报核验 → 质量、重放与价格收益。
 
-**无需安装先看结果：**[八公司、双源与收益结果](showcase/expanded.md) · [12项完整样例](showcase/interview.md) · [当前完成度与边界](docs/progress.md)。
+**本页是文档总入口。** 固定交付版本为[v0.3.1](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/tag/v0.3.1)；main中的文档持续维护，已发布标签和下载文件保持冻结。
 
-**面试交付：**[v0.3.0固定版本与下载](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/tag/v0.3.0) · [一页说明](docs/project-brief.md) · [交付清单与复现](docs/interviewer-handoff.md)。下载delivery.zip解压后打开START_HERE.html，可免安装查看全部结果；包内同时包含源码。results.zip供只读查看，source.zip供单独复现，选一个即可。
+## 快速入口
 
-## 克隆后运行
+| 你想做什么 | 从这里开始 |
+|---|---|
+| 不安装环境，先看完整结果 | [下载完整交付包，约1MB](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.3.1/fin-feature-framework-v0.3.1-delivery.zip)，解压打开START_HERE.html |
+| 只想快速在线阅读 | [八公司、双源及收益结果](showcase/expanded.md)、[12项完整样例](showcase/interview.md) |
+| 三分钟了解项目 | [一页说明](docs/project-brief.md)、[PDF下载](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.3.1/project-brief-v0.3.1.pdf) |
+| 交给面试官 | [交付消息模板及链接](docs/submission-message.md)、[文件选择与复现说明](docs/interviewer-handoff.md) |
+| 核对是否完成、还有哪些缺口 | [当前进展](docs/progress.md)、[验收证据](docs/acceptance.md)、[缺口与升级优先级](docs/gaps-and-weaknesses.md) |
 
-需要 **Linux + Python 3.12或更新版本（含venv/pip）**；Windows在WSL中执行。首次安装需要软件包网络，演示本身不请求金融接口。
+完整包已含源码、HTML、CSV/JSON、PDF与校验清单，不必重复下载三种ZIP。只读查看可选[结果包](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.3.1/fin-feature-framework-v0.3.1-results.zip)；需要完整Git历史时克隆仓库。
 
-Windows已装好WSL及其中的Python时，也可双击根目录`run-demo.cmd`，它在Linux临时目录计算，再把查看用文件导回`data/windows-demo/`并尝试打开浏览器。免安装结果包不要求WSL。
+## 一键运行
+
+Linux/WSL需要Python≥3.12（含venv/pip）。首次安装需要软件包网络，默认演示不访问金融接口。
 
 ```bash
 git clone https://github.com/GGGGGG-Bond/fin_feature_framework.git
@@ -18,39 +26,42 @@ cd fin_feature_framework
 bash run.sh
 ```
 
-一条命令完成环境准备、默认演示和HTML结果总览。终端会打印 `Overview: .../index.html`，用浏览器打开该文件即可；每次在 `data/demo/` 创建新目录，不覆盖前次结果。
+终端打印结果页路径。Windows已有WSL及其中的Python时，源码根目录双击`run-demo.cmd`；完整交付包双击`RUN_DEMO.cmd`。脚本自动选择可用分发版，在Linux临时目录计算，再把查看文件导回`data/windows-demo/`。原生Windows重算不受支持；直接看结果包不需要WSL。
 
 ```bash
-bash run.sh --open         # 请求本机浏览器打开结果；WSL/无桌面环境可手动打开
-bash run.sh --only interview # 单独运行12项完整特征样例
-bash run.sh --only all       # 扩展展示与原有四组演示
+bash run.sh --open            # 尝试打开默认浏览器
+bash run.sh --only interview  # 只运行12项完整特征样例
+bash run.sh --only all        # 扩展展示及其他四组演示
 ```
 
-已安装多个Python时可用 `PYTHON=python3.12 bash run.sh` 指定。重复运行会复用依赖环境；测试环境另按[开发指南](docs/development.md)安装pytest。原生Windows暂不支持证据文件所需的目录fsync。
+复现正式交付时，克隆命令增加`--branch v0.3.1`即可固定版本。运行失败、平台前提及下载校验见[交付指南](docs/interviewer-handoff.md)。
 
-## 默认演示看什么
+## 文档索引
 
-- **八家公司 × 八季度 × 三表**：茅台、美的、宁德时代、三一、万科、招行、平安、中信证券，覆盖2023Q1—2024Q4。
-- 192个报表版本、768条特征、232条有值，768/768冻结输入重放一致；空值保留原因，不为覆盖率放开口径门禁。
-- **双源96个位置**：84处双方有值且数值一致；对2024正式年报，81一致、3与后续调整后的比较列一致、12缺值/定义不齐。
-- **五组价格收益回测**：正常特征链计算信号，次交易日入场、固定持仓、双边成本、基准、每日净值和回撤；八公司样本验证流程，不证明策略有效。
-- 另有茅台三份正式财报27项事实，**2024年末12/12特征有值**，覆盖ROE、同比、单季环比和流动比率变化。
-- HTML按公司/期间筛选，展示双方值、正式出处与差异、全部特征及空值原因、净值图、CSV和血缘报告。
+| 主题 | 权威入口 | 内容与使用场景 |
+|---|---|---|
+| 范围与完成度 | [功能范围](docs/requirements.md)、[当前进展](docs/progress.md) | 哪些要求已实现，限定范围是什么 |
+| 验证与已知缺口 | [验收记录](docs/acceptance.md)、[覆盖明细](docs/gaps-and-weaknesses.md) | 实测环境、样本分母、空值原因、升级顺序 |
+| 面试交付 | [一页说明](docs/project-brief.md)、[交付指南](docs/interviewer-handoff.md)、[发送消息](docs/submission-message.md) | 看什么、下载什么、怎么发送与复现 |
+| 示例与收益口径 | [扩展展示规则](docs/showcase.md)、[完整特征样例口径](docs/interview.md) | 真实采样、事实重建、双源差异、回测假设 |
+| 安装、CLI、开发 | [运行操作](docs/delivery.md)、[开发与发布](docs/development.md) | 环境、采集范围、测试、打包与校验 |
+| 财务定义 | [字段字典](docs/stage-1/data-dictionary.md)、[12项公式](docs/stage-1/feature-definitions.md)、[字段权威](docs/stage-1/field-authority.md) | 单位、累计/单季、比较基数、缺失与行业适用性 |
+| 架构与决策 | [架构](docs/architecture.md)、[设计决策](docs/decisions.md) | 模块职责、取舍及升级边界 |
+| 证据、事务、版本 | [阶段2技术参考](docs/stage-2/README.md)、[数据模型](docs/stage-2/data-model.md)、[迁移](docs/stage-2/migration.md) | 原体、尝试、版本/观察、原子性、冻结计算输入 |
+| 双源与正式披露 | [阶段3技术参考](docs/stage-3/README.md)、[金融字段映射](docs/stage-3/financial-mapping.md) | 第二来源仅核验、差异/不可比/缺失、官方出处 |
+| 截至日与修订 | [历史查询与刷新](docs/stage-4.md) | 系统观察/公开时间、修订失效、保存历史的边界 |
+| 文档维护与历史 | [维护规则](docs/documentation.md)、[参考目录](docs/README.md)、[历史说明](HISTORY.md) | 文档职责、更新检查、历史计划/快照的位置 |
 
-扩展展示选定字段来自**2026-10-18真实采集**，保留来源、时间及母原体摘要；Git不分发原体，离线重建API信封并生成独立演示证据，不冒充供应商原体。正式财报信号和12项完整样例则是人工核对事实重建输入。身份与时间分开保存，详见[扩展展示与回测](docs/showcase.md)、[完整特征口径](docs/interview.md)。
+## v0.3.1结果与边界（固定数据沿用v0.3.0）
 
-## 能力与限制
+- 八家公司、2023Q1—2024Q4、三类报表：192版本，768条特征，232条有值，768/768冻结输入重放一致。
+- 主样本有值结果集中在当期比率；八类跨期增长/变化特征在该真实样本仍为空。原因分布及逐特征覆盖见[缺口清单](docs/gaps-and-weaknesses.md)，另有绑定正式事实的茅台样例目标期12/12有值。
+- 双源96位置：84处双方有值且数值一致；对2024年报81一致、3对应后续调整比较列、12缺值/定义不齐。两网站相同不证明独立上游或修订口径一致。
+- 新增`return-backtest`使用价格收益、成本、基准和每日净值；旧`backtest`仍是盈利增长代理。八家手选跨行业样本只验证流程，不证明策略有效。
+- 已发布版832项离线测试通过，11项联网测试未运行；Windows/WSL入口、解压复算及六个资产的匿名下载/摘要核对已完成，详见[验收](docs/acceptance.md)。
 
-采集限频与分页、失败单元回滚、原始证据、修订版本、清洗诊断、特征血缘、质量报告和离线重放均已实现。东方财富主来源，新浪辅助核验，第二来源不静默拼接。
+字段来自真实采样，离线API信封为重建；Git及交付包不分发母原体或数据库。正式财报信号使用人工核对事实及保守公开日期声明，不恢复未知历史。全市场、生产调度、远端CI、Codespaces均不列为已验证能力。许可证尚未指定。
 
-本批重新采集并核对八家公司；原先34/50/12是旧快照的历史统计。三一三个调整差异说明“双源相同”不等于核验完成，也不证明上游独立。第二来源仅核验，不拼接计算。
+## 维护说明
 
-`return-backtest`是新增价格收益功能；旧`backtest`仍是盈利增长代理。回测使用已核对年报的保守公开日期声明，不把当前2026修订冒充2025当时可用。未知修订公开时间、未保存历史、生产调度及全市场验收仍有边界。
-
-## 更多入口
-
-[文档导航](docs/README.md) · [安装与CLI](docs/delivery.md) · [测试与验收](docs/acceptance.md) · [财务定义](docs/stage-1/README.md)。阶段契约保留历史设计背景，当前状态以progress/acceptance为准。
-
-提供[Codespaces配置](.devcontainer/devcontainer.json)，但云端实例尚未实测。它需要GitHub登录及可用额度，不是免登录网页演示；见[GitHub说明](https://docs.github.com/en/codespaces/developing-in-a-codespace/creating-a-codespace-for-a-repository)。
-
-保留经脱敏的96个原始迭代提交和18个合并关系；后续公开改动继续正常提交。[历史说明](HISTORY.md)。尚未指定开源许可证。
+当前状态以progress为准，执行证据以acceptance及固定Release清单为准，财务公式以stage1-v1定义为准。历史阶段文档保留其日期和限制，不当作当前待办或新的审批要求。更新文档后运行`python scripts/check_docs.py`；完整验收脚本也会检查本地链接。具体职责与更新规则见[文档维护](docs/documentation.md)，发布变化见[版本变更](CHANGELOG.md)。
