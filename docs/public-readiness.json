@@ -1,0 +1,61 @@
+{
+  "schema": "public-candidate-readiness-v1",
+  "validated_at_utc": "2026-10-18T03:50:16.010769+00:00",
+  "status": "locally_verified",
+  "steps": [
+    {
+      "name": "setup",
+      "exit_code": 0
+    },
+    {
+      "name": "pip-check",
+      "exit_code": 0
+    },
+    {
+      "name": "import-source",
+      "exit_code": 0
+    },
+    {
+      "name": "tests",
+      "exit_code": 0
+    },
+    {
+      "name": "demo",
+      "exit_code": 0
+    }
+  ],
+  "error": null,
+  "tests": "770 passed, 11 deselected in 40.91s",
+  "demo_replays": [
+    {
+      "name": "public",
+      "count": 72,
+      "matches": 72
+    },
+    {
+      "name": "revision",
+      "count": 48,
+      "matches": 48
+    },
+    {
+      "name": "artificial",
+      "count": 24,
+      "matches": 24
+    }
+  ],
+  "financial_network_requests": 0,
+  "codespaces_executed": false,
+  "github_actions_executed": false,
+  "license_added": false,
+  "note": "Local Linux validation preceded privacy-preserving history import. Product/test/fixture files and tested demo/setup scripts unchanged; historical metadata and public documentation updated afterward.",
+  "publication_performed_by_this_validation": false,
+  "history_imported_after_validation": {
+    "imported_commits": 96,
+    "merge_commits": 18,
+    "dates_names_parent_graph_preserved": true,
+    "company_emails_mapped_to_privacy_email": true,
+    "business_tests_fixture_files_unchanged": 113,
+    "commit_ids_rewritten_for_privacy": true,
+    "original_history_modified_in_place": false
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "imported_commits": 96,
+  "merge_commits": 18,
+  "dates_names_parent_graph_preserved": true,
+  "company_emails_mapped_to_privacy_email": true,
+  "business_tests_fixture_files_unchanged": 113,
+  "commit_ids_rewritten_for_privacy": true,
+  "original_history_modified_in_place": false
+}

@@ -1,0 +1,10 @@
+{
+  "name": "Financial Feature Framework",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+  "remoteUser": "vscode",
+  "postCreateCommand": "bash scripts/setup_demo.sh",
+  "containerEnv": {
+    "PYTHONUTF8": "1",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  }
+}

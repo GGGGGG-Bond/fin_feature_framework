@@ -1,0 +1,17 @@
+{
+  "public_facts": true,
+  "reconstructed_api_envelopes": true,
+  "original_vendor_responses": false,
+  "network_requests": 0,
+  "reviewed_public_facts": 32,
+  "financial_units": 6,
+  "ingest_status": "success",
+  "features": 72,
+  "non_null_features": 16,
+  "replay_count": 72,
+  "replay_matches": 72,
+  "report_exit_code": 0,
+  "evidence_audit_clean": true,
+  "limitations": "2023 amounts are comparative columns of the 2024 annual reports; this does not restore original 2023 disclosures.",
+  "note": "Saved local execution of reconstructed public-fact envelopes; not a live supplier response."
+}

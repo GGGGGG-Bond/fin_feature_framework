@@ -1,9 +1,6 @@
 {
   "schema": "project-acceptance-v1",
   "validated_at_utc": "2026-10-17T17:19:09.466115+00:00",
-  "validated_code_commit": "2ace51b22d2791753a9f925665cfd807a9344caf",
-  "tested_code_files": 121,
-  "tested_code_content_sha256": "1853b2bce0ebf34d6baf447f93c117c04173cce45ede5c3e446eefd37b8983a6",
   "scope": "implementation-plan stages 0-5, bounded saved-history and sample acceptance",
   "self_review": true,
   "independent_review_this_round": false,
@@ -131,24 +128,11 @@
     "upstream_independence_verified": false,
     "provider_revision_alignment_verified": false
   },
-  "artifact": {
-    "wheel": "fin_feature_framework-0.2.0-py3-none-any.whl",
-    "sha256": "64c787290967e99b1b53ae32e2dd319475647d95e4e6bdd9e7b8c7e1f8e0eb8f",
-    "pip_check_passed": true,
-    "wheel_smoke_passed": true
-  },
-  "evidence": {
-    "offline_archive": "data/acceptance-20261018",
-    "live_archive": "data/live-smoke-20261018",
-    "archive_audit_exit_code": 0,
-    "archive_replay_matches": 24
-  },
-  "gitlab_ci_executed": false,
-  "production_or_existing_business_db_changed": false,
   "limits": [
     "50 numeric sample pairs not manually reviewed; 12 source fields missing by definition.",
     "Production revision public dates remain unknown; only explicitly dated saved observations support public history.",
     "No restoration of uncaptured historical versions or historical software environment.",
     "Current-version financial growth grouping is descriptive, not a tradable or investment return backtest."
-  ]
+  ],
+  "note": "Historical bounded acceptance of the base implementation; not a Codespaces or new public-host CI run."
 }
