@@ -36,11 +36,11 @@ class NetProfitMargin(Feature):
 
 @FeatureRegistry.register
 class GrossMarginFeature(Feature):
-    """毛利率（来自 API 的 XSMLL 字段，经标准化入口转为小数）。"""
+    """经过核验的累计销售毛利率（标准化小数）。"""
 
     name = "gross_margin_feat"
     group = "profitability"
-    description = "销售毛利率（小数，来自主要财务指标接口，经标准化）"
+    description = "销售毛利率（经单位和定义核验的累计小数）"
 
     def calculate(self, ctx: FeatureContext) -> float | None:
         # T16: 金融企业不套用工业企业毛利率定义，返回 None + not_applicable

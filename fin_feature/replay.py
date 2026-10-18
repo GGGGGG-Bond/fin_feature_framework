@@ -5,6 +5,7 @@ import math
 from fin_feature.cleaning.versioned import VersionedCleanRepository, _prepare, digest, PIPELINE_VERSION
 from fin_feature.features.versioned import code_identity, evaluate_feature, input_lineage
 from fin_feature.storage.hashing import canonical_json, compute_metric_hash, compute_semantic_hash
+from fin_feature.features.reviewed import comparison_bases
 
 
 class FrozenInputs(VersionedCleanRepository):
@@ -55,6 +56,7 @@ class FrozenInputs(VersionedCleanRepository):
             if status == 'kept':
                 self.records[key] = {**compat, **vals, 'record_ref': version_id, 'clean_ref': clean['clean_id'],
                                      'industry_type': version['industry_type'], '__standardized__': True}
+                self.records[key]['__comparison_bases__'] = comparison_bases(version, self.config)
         if canonical_json(input_lineage(self, result['secucode'], result['report_date'], result['feature_name'])) != canonical_json(inputs):
             raise ValueError('saved field dependency lineage is incomplete or inconsistent')
 

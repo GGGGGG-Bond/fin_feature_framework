@@ -152,6 +152,8 @@ class AsOfInputs(VersionedCleanRepository):
                 self.records[key] = {**compat, **vals, 'record_ref': version['version_id'],
                                      'clean_ref': clean_id, 'industry_type': version['industry_type'],
                                      '__standardized__': True, '__diagnostics__': diagnostics}
+                from fin_feature.features.reviewed import comparison_bases
+                self.records[key]['__comparison_bases__'] = comparison_bases(version, self.config)
 
 
 def query_asof(repo, as_of, view='system', secucode=None, config=None, include_features=False):

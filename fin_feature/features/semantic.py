@@ -73,6 +73,7 @@ class FieldSource:
     notice_date: str | None = None
     record_ref: str | None = None
     comparable: bool = False  # 受控 fixture 显式声明同口径可比
+    comparison_basis: str | None = None  # 已核对且绑定输入内容的字段口径
 
 
 def _get_clean_record_safe(
@@ -125,6 +126,7 @@ def merge_three_tables_semantic(
                 table_suffix=auth_table,
                 notice_date=auth_record.get("notice_date") if auth_record else None,
                 record_ref=auth_record.get("record_ref") if auth_record else None,
+                comparison_basis=auth_record.get('__comparison_bases__', {}).get(field_name),
             )
             # 检查冲突：回退表也有有效值
             if fb_value is not None and fb_value != auth_value:
