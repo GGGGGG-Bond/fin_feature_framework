@@ -4,26 +4,26 @@
   "date": "2026-10-18",
   "environment": "Fresh Linux CPython3.14.6 virtual environment, directory containing spaces, WSL on Windows",
   "tests": {
-    "passed": 852,
+    "passed": 856,
     "deselected_network": 11,
-    "seconds": 68.67
+    "seconds": 68.7
   },
   "steps": {
     "startup": {
       "exit_code": 0,
-      "seconds": 36.91
+      "seconds": 37.64
     },
     "dev-install": {
       "exit_code": 0,
-      "seconds": 8.54
+      "seconds": 7.49
     },
     "acceptance": {
       "exit_code": 0,
-      "seconds": 87.86
+      "seconds": 88.42
     },
     "reuse": {
       "exit_code": 0,
-      "seconds": 11.68
+      "seconds": 11.93
     }
   },
   "provider": {
@@ -58,12 +58,34 @@
       "3.12",
       "3.14"
     ],
-    "initial_result": "success; before the 20 new regressions",
-    "final_run": "Recorded in subsequent PR/Actions checks"
+    "initial_result": "success; before the 24 new regressions",
+    "final_run": "https://github.com/GGGGGG-Bond/fin_feature_framework/actions/runs/39107632258",
+    "final_code_commit": "774d8e623c4165448226b18863cda5934c10c43d",
+    "final_python_312": "success",
+    "final_python_314": "success",
+    "test_results": {
+      "python_314": {
+        "passed": 856,
+        "seconds": 37.83,
+        "deselected": 11
+      },
+      "python_312": {
+        "passed": 856,
+        "seconds": 37.1,
+        "deselected": 11
+      }
+    }
   },
   "limitations": [
     "Local and hosted automated verification, not independent external certification.",
     "Issuer fact envelopes are reconstructed; provider and reviewed denominators are separate.",
     "Exact historical first/revision publication instants remain unknown."
-  ]
+  ],
+  "presentation_checks": {
+    "release_reference_probes": 3,
+    "browser_layout_verified": false,
+    "pdf_pages": 1,
+    "html_filter_dom_stub_scenarios": 6,
+    "pdf_visually_rendered": true
+  }
 }
