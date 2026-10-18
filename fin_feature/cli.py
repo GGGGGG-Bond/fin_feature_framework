@@ -329,6 +329,13 @@ def main() -> None:
     rbp.add_argument('--output-dir', required=True)
     from fin_feature.addons.returns import cmd_return_backtest
 
+    rsp = sub.add_parser('return-study', help='滚动形成、显式样本子集和交易成本敏感性研究')
+    rsp.add_argument('--signals', required=True)
+    rsp.add_argument('--prices', required=True)
+    rsp.add_argument('--plan', required=True, help='return-study-plan-v1 JSON')
+    rsp.add_argument('--output-dir', required=True)
+    from fin_feature.addons.return_study import cmd_return_study
+
     sb = sub.add_parser("sample-batch", help="固定最多八家公司双源采样与覆盖汇总")
     sb.add_argument("--plan", required=True, help="sample-batch-v1 JSON 计划")
     sb.add_argument("--output-dir", required=True, help="必须不存在的新输出目录")
@@ -390,6 +397,7 @@ def main() -> None:
 
     commands = {
         'return-backtest': cmd_return_backtest,
+        'return-study': cmd_return_study,
         "delivery-report": cmd_delivery_report,
         "as-of": cmd_asof,
         "refresh": cmd_refresh,

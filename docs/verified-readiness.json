@@ -1,0 +1,91 @@
+{
+  "schema": "upgrade-readiness-v1",
+  "version": "0.4.0",
+  "date": "2026-10-18",
+  "environment": "Fresh Linux CPython3.14.6 virtual environment, directory containing spaces, WSL on Windows",
+  "tests": {
+    "passed": 856,
+    "deselected_network": 11,
+    "seconds": 68.7
+  },
+  "steps": {
+    "startup": {
+      "exit_code": 0,
+      "seconds": 37.64
+    },
+    "dev-install": {
+      "exit_code": 0,
+      "seconds": 7.49
+    },
+    "acceptance": {
+      "exit_code": 0,
+      "seconds": 88.42
+    },
+    "reuse": {
+      "exit_code": 0,
+      "seconds": 11.93
+    }
+  },
+  "provider": {
+    "positions": 768,
+    "finite": 232,
+    "replay_matches": 768
+  },
+  "reviewed": {
+    "companies": 3,
+    "facts": 78,
+    "positions": 144,
+    "finite": 57,
+    "target_positions": 36,
+    "target_finite": 36,
+    "replay_matches": 144
+  },
+  "study": {
+    "scenarios": 9,
+    "windows": 3,
+    "cost_bps": [
+      0,
+      10,
+      30
+    ],
+    "status": "success"
+  },
+  "financial_network_requests": 0,
+  "ci": {
+    "initial_run": "https://github.com/GGGGGG-Bond/fin_feature_framework/actions/runs/39106466656",
+    "initial_commit": "7f6fcdd207a9f1014abdbe1dc4a7a296d9b1b4be",
+    "python_versions": [
+      "3.12",
+      "3.14"
+    ],
+    "initial_result": "success; before the 24 new regressions",
+    "final_run": "https://github.com/GGGGGG-Bond/fin_feature_framework/actions/runs/39107632258",
+    "final_code_commit": "774d8e623c4165448226b18863cda5934c10c43d",
+    "final_python_312": "success",
+    "final_python_314": "success",
+    "test_results": {
+      "python_314": {
+        "passed": 856,
+        "seconds": 37.83,
+        "deselected": 11
+      },
+      "python_312": {
+        "passed": 856,
+        "seconds": 37.1,
+        "deselected": 11
+      }
+    }
+  },
+  "limitations": [
+    "Local and hosted automated verification, not independent external certification.",
+    "Issuer fact envelopes are reconstructed; provider and reviewed denominators are separate.",
+    "Exact historical first/revision publication instants remain unknown."
+  ],
+  "presentation_checks": {
+    "release_reference_probes": 3,
+    "browser_layout_verified": false,
+    "pdf_pages": 1,
+    "html_filter_dom_stub_scenarios": 6,
+    "pdf_visually_rendered": true
+  }
+}

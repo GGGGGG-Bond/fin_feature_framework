@@ -1,0 +1,9 @@
+{
+  "schema": "reviewed-report-manifest-v1",
+  "reviewed_at": "2026-10-18",
+  "files": {
+    "catl.json": "f0ccfc8cc99d10917b01a837b0d9abccba934c2917a960370760338e26809e52",
+    "midea.json": "2e3dd03e5eb016197f1b5f84a83ba5fd3d0fe207eb44bd8e8e5c4d86b48c769c",
+    "moutai.json": "37263bf7b36204280e256feb452d75ec4e3577f64dd90d343a2529051b022572"
+  }
+}

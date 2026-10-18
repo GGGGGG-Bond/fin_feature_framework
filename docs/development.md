@@ -22,7 +22,7 @@ bash scripts/setup_demo.sh
 使用干净Git checkout、Linux/WSL的已安装运行环境；先逐页检查一页PDF，再执行：
 
 ```bash
-.venv/bin/python scripts/package_release.py --brief-pdf /path/project-brief-v0.3.1.pdf --output-dir dist/new-v0.3.1
+.venv/bin/python scripts/package_release.py --brief-pdf /path/project-brief-v0.4.0.pdf --output-dir dist/new-v0.4.0
 ```
 
 输出源码ZIP、免安装结果ZIP、完整交付ZIP、PDF、release-manifest.json及SHA256SUMS.txt。脚本不会创建标签、推送或发布Release；这些步骤需由发布者核对仓库、身份和固定提交后执行。打包从Git提交读取源码，拒绝脏工作树；运行数据仅在临时目录生成，原体和DB不进入公开资产。下载后的完整包可用Python标准库的scripts/verify_bundle.py校验；发布前以--strict检查全部不可变文件，复算产生的新文件不在原清单中。
@@ -30,3 +30,7 @@ bash scripts/setup_demo.sh
 ## 当前main的文档检查
 
 文档总入口是根README，维护职责见[documentation.md](documentation.md)。执行`python scripts/check_docs.py`检查本地路径和Markdown标题锚点；完整验收脚本已接入。此工具自v0.3.1加入；冻结的v0.3.0源码包不含该脚本。打包版本自动读取pyproject，已有资产保持原身份。
+
+## GitHub自动验收
+
+.github/workflows/offline.yml在main、功能分支及PR运行Linux Python3.12/3.14矩阵，执行verify_offline.py并保存日志。使用只读contents权限；金融接口不参与离线验收。当前交付文档的标签链接还会由`python scripts/check_release_refs.py`对照pyproject版本检查。

@@ -52,14 +52,30 @@ def test_showcase_is_offline_and_runs_real_pipelines(tmp_path,monkeypatch):
     assert summary['backtest_members']==8 and summary['backtest_groups']==5
     assert summary['historical_current_provider_rejected']==8
     assert summary['network_requests']==0
+    assert summary['reviewed_target_finite'] == summary['reviewed_target_positions'] == 36
+    assert summary['reviewed_replay_matches'] == summary['reviewed_replay_count'] == 144
+    assert summary['reviewed_facts'] == 78 and summary['reviewed_companies'] == 3
+    assert summary['return_study_scenarios'] == 9 and summary['return_study_status'] == 'success'
     backtest=json.loads((output/'backtest/summary.json').read_bytes())
     assert sorted(r['size'] for r in backtest['groups'])==[1,1,2,2,2]
     assert backtest['entry_date']=='2025-05-06' and backtest['exit_date']=='2025-12-31'
     signals=json.loads((output/'signals.json').read_bytes())
     sany=next(r for r in signals['records'] if r['secucode']=='600031.SH')
     assert sany['feature_value']==pytest.approx(79143477000/152145076000)
+    editions = json.loads((output/'disclosure-editions.json').read_bytes())
+    from fin_feature.addons.return_study import select_public_signals
+    candidates = dict(schema='return-signals-v1', feature_name='debt_asset_ratio', records=[
+        dict(secucode=editions['secucode'], report_date=editions['report_date'], available_at=e['available_by'],
+             feature_value=float(Decimal(e['values']['total_liabilities'])/Decimal(e['values']['total_assets'])),
+             evidence_ref=e['document']['url']) for e in editions['editions']])
+    historical, missing = select_public_signals(candidates, '2025-05-05', ['600031.SH'])
+    assert not missing and historical['records'][0]['feature_value'] == sany['feature_value']
+    later, _ = select_public_signals(candidates, '2026-04-01', ['600031.SH'])
+    assert later['records'][0]['feature_value'] != sany['feature_value']
+    assert editions['first_public_at'] is None and editions['exact_revision_public_at'] is None
     html=(output/'index.html').read_text()
     assert 'dual-table' in html and 'features-table' in html and '<svg' in html
+    assert 'reviewed-table' in html and 'return-study/sensitivity.csv' in html
     assert 'cdn.' not in html and 'src="https://' not in html
     from scripts.export_results import export_tree
     portable=export_tree(output,tmp_path/'portable')
