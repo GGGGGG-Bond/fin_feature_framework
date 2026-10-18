@@ -28,7 +28,7 @@ cd fin_feature_framework
 bash run.sh
 ```
 
-终端打印结果页路径。Windows已有WSL及其中的Python时，源码根目录双击`run-demo.cmd`；完整交付包双击`RUN_DEMO.cmd`。脚本自动选择可用分发版，在Linux临时目录计算，再把查看文件导回`data/windows-demo/`。原生Windows重算不受支持；直接看结果包不需要WSL。
+终端打印结果页路径。Windows已有WSL及其中的Python时，源码根目录双击`run-demo.cmd`；完整交付包双击`RUN_DEMO.cmd`。脚本自动选择可用分发版，在Linux临时目录计算，再把查看文件导回`data/windows-demo/`。原生Windows重算现受支持（需`PYTHONUTF8=1`与符号链接权限）；直接看结果包不需要WSL。
 
 ```bash
 bash run.sh --open            # 尝试打开默认浏览器
@@ -61,7 +61,7 @@ bash run.sh --only all        # 扩展展示及其他四组演示
 - 新增独立正式财报视图：贵州茅台、美的集团、宁德时代共78项事实，2024年末目标36/36有值；全144位置中57有值、144/144重放一致。供应商未知口径仍拒算，两种输入分别统计。
 - 双源96位置：84处双方有值且数值一致；对2024年报81一致、3对应后续调整比较列、12缺值/定义不齐。两网站相同不证明独立上游或修订口径一致。
 - `return-backtest`保留五组价格收益；新增`return-study`：三个滚动区间、0/10/30bps成本、全样本/非金融/制造示例三个子集，共9场景。旧`backtest`仍是盈利增长代理。手选小样本不证明策略有效。
-- 离线回归与完整验收见[验收记录](docs/acceptance.md)；GitHub已实际运行Linux Python3.12/3.14矩阵。11项联网测试不作为离线通过项；正式交付另核对解压、Windows/WSL启动和匿名下载。
+- 离线回归与完整验收见[验收记录](docs/acceptance.md)；GitHub已实际运行Linux Python3.12/3.14矩阵。11项联网测试已补跑通过（`tests/test_e2e.py`），不并入离线验收；正式交付另核对解压、Windows/WSL启动和匿名下载。
 
 字段来自真实采样，离线API信封为重建；Git及交付包不分发母原体或数据库。正式财报信号使用人工核对事实及保守公开日期声明，不恢复未知历史。全市场、生产调度、Codespaces均不列为已验证能力。许可证尚未指定。
 

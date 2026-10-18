@@ -352,6 +352,8 @@ class RawStore:
 
     @staticmethod
     def _fsync_dir(directory: Path) -> None:
+        if os.name == "nt":  # Windows 不支持对目录 fsync（os.open 目录会抛 PermissionError）
+            return
         fd = os.open(str(directory), os.O_RDONLY)
         try:
             os.fsync(fd)
