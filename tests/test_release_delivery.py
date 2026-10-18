@@ -6,7 +6,7 @@ import zipfile
 
 import pytest
 from scripts.export_results import export_tree,check_links
-from scripts.package_release import manifest,zip_tree,start_page
+from scripts.package_release import manifest,zip_tree,start_page,finalize_bundle
 from scripts.verify_bundle import verify_bundle
 
 
@@ -78,9 +78,10 @@ def test_archive_manifest_survives_extraction_and_no_overwrite(tmp_path):
 def test_start_page_for_both_bundle_types(tmp_path):
     for with_code in (False,True):
         root=tmp_path/str(with_code);root.mkdir()
-        files=['results/index.html','PROJECT_BRIEF.pdf','PROJECT_BRIEF.html','GUIDE.md','MANIFEST.json']
+        files=['results/index.html','PROJECT_BRIEF.pdf','PROJECT_BRIEF.html','GUIDE.md']
         if with_code:files+=['code/README.md','code/docs/acceptance.md','code/docs/interviewer-handoff.md']
         for name in files:
             p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('fixture')
         (root/'START_HERE.html').write_text(start_page('0.3.0','c'*40,with_code))
-        check_links(root)
+        result=finalize_bundle(root,'0.3.0','c'*40)
+        assert result['verified_files']==len(files)+1

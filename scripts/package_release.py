@@ -50,6 +50,13 @@ def zip_tree(root,output):
             archive.writestr(info,p.read_bytes())
 
 
+def finalize_bundle(root,version,commit):
+    # START_HERE links to the manifest, so create it before validating links.
+    result=manifest(root,version,commit)
+    check_links(root)
+    return result
+
+
 def start_page(version,commit,with_code):
     code=('<li>复现：Linux在本目录运行 <code>bash run.sh</code>；Windows双击 <code>RUN_DEMO.cmd</code>。'
           '需要Linux/WSL中的Python≥3.12及venv/pip，首次安装需要包源网络。</li><li><a href="code/README.md">源码说明</a> · '
@@ -106,7 +113,7 @@ def build_release(repo,output,brief_pdf,version='0.3.0'):
                 (root/'run.sh').write_text('#!/usr/bin/env bash\nset -euo pipefail\ncd "$(dirname "$0")/code"\nexec bash run.sh "$@"\n',encoding='utf-8')
             (root/'START_HERE.html').write_text(start_page(version,commit,kind=='delivery'),encoding='utf-8')
             (root/'OPEN_RESULTS.cmd').write_bytes(b'@echo off\r\nstart "" "%~dp0START_HERE.html"\r\n')
-            check_links(root);roots.append(manifest(root,version,commit))
+            roots.append(finalize_bundle(root,version,commit))
             zip_tree(root,output/(root.name+'.zip'))
         pdf=output/('project-brief-v'+version+'.pdf');shutil.copy2(brief_pdf,pdf)
         record=dict(schema='fin-release-v1',version=version,tag='v'+version,source_commit=commit,
