@@ -1,0 +1,120 @@
+{
+  "schema": "feature-coverage-review-v1",
+  "review_date": "2026-10-18",
+  "release": "v0.3.0",
+  "source_commit": "83457bcd79c37616b9fa9bc7d92707f3a725d825",
+  "source_asset": "https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.3.0/fin-feature-framework-v0.3.0-delivery.zip",
+  "source_asset_sha256": "d5c58d355ebfef53c81c085adf65b9d7ab45f0787bb94d7b4cca1ad92e274be4",
+  "feature_file_in_asset": "fin-feature-framework-v0.3.0-delivery/results/features.json",
+  "feature_file_sha256": "8f8c243ced8e42d3b996fb947ba7f719719d57ad9b56f3964425f0ec42c8e85f",
+  "positions": 768,
+  "finite": 232,
+  "null": 536,
+  "null_reasons": {
+    "unknown_unit": 40,
+    "missing_comparison_period": 152,
+    "incomparable_basis": 296,
+    "not_applicable": 48
+  },
+  "features": [
+    {
+      "feature_name": "current_ratio_change",
+      "positions": 64,
+      "finite": 0,
+      "null_reasons": {
+        "unknown_unit": 40,
+        "not_applicable": 24
+      }
+    },
+    {
+      "feature_name": "debt_asset_ratio",
+      "positions": 64,
+      "finite": 64,
+      "null_reasons": {}
+    },
+    {
+      "feature_name": "debt_asset_ratio_change",
+      "positions": 64,
+      "finite": 0,
+      "null_reasons": {
+        "missing_comparison_period": 8,
+        "incomparable_basis": 56
+      }
+    },
+    {
+      "feature_name": "equity_ratio",
+      "positions": 64,
+      "finite": 64,
+      "null_reasons": {}
+    },
+    {
+      "feature_name": "gross_margin_feat",
+      "positions": 64,
+      "finite": 40,
+      "null_reasons": {
+        "not_applicable": 24
+      }
+    },
+    {
+      "feature_name": "net_profit_margin",
+      "positions": 64,
+      "finite": 64,
+      "null_reasons": {}
+    },
+    {
+      "feature_name": "profit_qoq",
+      "positions": 64,
+      "finite": 0,
+      "null_reasons": {
+        "missing_comparison_period": 8,
+        "incomparable_basis": 56
+      }
+    },
+    {
+      "feature_name": "profit_yoy",
+      "positions": 64,
+      "finite": 0,
+      "null_reasons": {
+        "missing_comparison_period": 32,
+        "incomparable_basis": 32
+      }
+    },
+    {
+      "feature_name": "revenue_qoq",
+      "positions": 64,
+      "finite": 0,
+      "null_reasons": {
+        "missing_comparison_period": 8,
+        "incomparable_basis": 56
+      }
+    },
+    {
+      "feature_name": "revenue_yoy",
+      "positions": 64,
+      "finite": 0,
+      "null_reasons": {
+        "missing_comparison_period": 32,
+        "incomparable_basis": 32
+      }
+    },
+    {
+      "feature_name": "roe_change",
+      "positions": 64,
+      "finite": 0,
+      "null_reasons": {
+        "missing_comparison_period": 32,
+        "incomparable_basis": 32
+      }
+    },
+    {
+      "feature_name": "roe_change_rate",
+      "positions": 64,
+      "finite": 0,
+      "null_reasons": {
+        "missing_comparison_period": 32,
+        "incomparable_basis": 32
+      }
+    }
+  ],
+  "note": "Main captured-field showcase only; separate reviewed 12/12 interview sample is not pooled into this denominator."
+}
