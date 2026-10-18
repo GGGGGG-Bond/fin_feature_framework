@@ -4,9 +4,13 @@ Python / SQLite / CLI：财务采集 → 清洗 → 12项特征 → 双源与正
 
 **无需安装先看结果：**[八公司、双源与收益结果](showcase/expanded.md) · [12项完整样例](showcase/interview.md) · [当前完成度与边界](docs/progress.md)。
 
+**面试交付：**[v0.3.0固定版本与下载](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/tag/v0.3.0) · [一页说明](docs/project-brief.md) · [交付清单与复现](docs/interviewer-handoff.md)。下载delivery.zip解压后打开START_HERE.html，可免安装查看全部结果；包内同时包含源码。results.zip供只读查看，source.zip供单独复现，选一个即可。
+
 ## 克隆后运行
 
 需要 **Linux + Python 3.12或更新版本（含venv/pip）**；Windows在WSL中执行。首次安装需要软件包网络，演示本身不请求金融接口。
+
+Windows已装好WSL及其中的Python时，也可双击根目录`run-demo.cmd`，它在Linux临时目录计算，再把查看用文件导回`data/windows-demo/`并尝试打开浏览器。免安装结果包不要求WSL。
 
 ```bash
 git clone https://github.com/GGGGGG-Bond/fin_feature_framework.git

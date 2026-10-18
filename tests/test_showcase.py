@@ -61,3 +61,7 @@ def test_showcase_is_offline_and_runs_real_pipelines(tmp_path,monkeypatch):
     html=(output/'index.html').read_text()
     assert 'dual-table' in html and 'features-table' in html and '<svg' in html
     assert 'cdn.' not in html and 'src="https://' not in html
+    from scripts.export_results import export_tree
+    portable=export_tree(output,tmp_path/'portable')
+    assert (portable/'captured/report/inputs.json').is_file()
+    assert not list(portable.rglob('*.db')) and not list(portable.rglob('*.gz'))
