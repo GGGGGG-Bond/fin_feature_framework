@@ -40,7 +40,10 @@ def write_overview(output, status):
             content.append('<p>特征结果数：{features}；有值：{non_null}；重放一致：{matches}/{count}。</p>'.format(
                 features=summary.get('features', '见摘要'), non_null=summary.get('non_null_features', '见摘要'),
                 matches=summary.get('replay_matches', 0), count=summary.get('replay_count', 0)))
-            if name == 'interview':
+            if name == 'showcase':
+                content.append('<p>八家公司、八季度、双源96处对照及价格收益五组回测。'
+                               '<a href="showcase/index.html">打开完整交互结果页 →</a></p>')
+            elif name == 'interview':
                 content.append('<p>正式财报27项固定事实，重建输入信封。目标：600519.SH / 2024-12-31，'
                                '12/12特征有值；其余期间可能因缺少比较期为空。</p>')
                 content.append('<p>毛利率使用营业收入与营业成本；净利率、增速使用营业总收入。'
@@ -82,7 +85,7 @@ th{background:#edf3f9}.warning{color:#a33b17}p,li{overflow-wrap:anywhere}
 @media(max-width:600px){body{padding:0 8px}header,section{padding:14px}td,th{padding:8px;font-size:13px}}
 </style><header><p>FINANCIAL FEATURE FRAMEWORK</p><h1>财务数据 → 清洗 → 特征 → 核验</h1>
 <p>本页由刚才执行的本地离线演示生成。金融接口请求数：0。无需服务端或外部资源即可打开。</p>
-<p class="warning">重放一致包括空值与原因一致，不等于全部特征有值；示例不构成投资收益回测。</p></header>
+<p class="warning">重放一致包括空值与原因一致，不等于全部特征有值；小样本价格收益仅验证流程，不能证明策略有效。</p></header>
 '''
     target = output / 'index.html'
     target.write_text(html + '\n'.join(sections) + '</html>\n', encoding='utf-8')
