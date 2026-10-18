@@ -9,19 +9,23 @@ import hashlib
 from html import escape
 import json
 from pathlib import Path
+import posixpath
 import shutil
 import subprocess
 import sys
 import tempfile
 import tomllib
 import zipfile
+from urllib.parse import quote, unquote, urlsplit
 
 if __package__:
     from .export_results import export_tree,check_links
     from .verify_bundle import verify_bundle
+    from .check_docs import LINK,check as check_markdown
 else:
     from export_results import export_tree,check_links
     from verify_bundle import verify_bundle
+    from check_docs import LINK,check as check_markdown
 
 
 def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -54,12 +58,39 @@ def finalize_bundle(root,version,commit):
     # START_HERE links to the manifest, so create it before validating links.
     result=manifest(root,version,commit)
     check_links(root)
+    docs=check_markdown(root)
+    if docs['errors']:
+        raise ValueError('broken bundle Markdown links: '+str(docs['errors']))
     return result
+
+
+def bundle_markdown(repo,source,version,with_code):
+    """Relocate source-document links to bundled code or the fixed public tag."""
+    repo,source=Path(repo),Path(source)
+    body=(repo/source).read_text(encoding='utf-8')
+    def relocate(match):
+        group=1 if match[1] is not None else 2
+        link=match[group]
+        url=urlsplit(link)
+        if url.scheme or not url.path:
+            return match[0]
+        target=posixpath.normpath(posixpath.join(source.parent.as_posix(),unquote(url.path)))
+        if (target=='..' or target.startswith(('../','/')) or '\\' in target
+                or not (repo/target).is_file()):
+            raise ValueError('invalid source document link: '+link)
+        path=quote(target,safe='/')
+        prefix='code/' if with_code else ('https://github.com/GGGGGG-Bond/fin_feature_framework/blob/v'+version+'/')
+        relocated=prefix+path
+        if url.query:relocated+='?'+url.query
+        if url.fragment:relocated+='#'+url.fragment
+        start,end=match.start(group)-match.start(),match.end(group)-match.start()
+        return match[0][:start]+relocated+match[0][end:]
+    return LINK.sub(relocate,body)
 
 
 def start_page(version,commit,with_code):
     code=('<li>复现：Linux在本目录运行 <code>bash run.sh</code>；Windows双击 <code>RUN_DEMO.cmd</code>。'
-          '需要Linux/WSL中的Python≥3.12及venv/pip，首次安装需要包源网络。</li><li><a href="code/README.md">源码说明</a> · '
+          'Linux/WSL需要Python≥3.12及venv/pip；原生Windows的Python运行命令见操作指南。首次安装需要包源网络。</li><li><a href="code/README.md">源码说明</a> · '
           '<a href="code/docs/acceptance.md">测试与验收</a> · <a href="code/docs/interviewer-handoff.md">完整操作指南</a></li>') if with_code else (
           '<li>若需复算，请下载同一Release的delivery.zip或source.zip，或按版本标签克隆源码。</li>')
     return '''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -104,8 +135,8 @@ def build_release(repo,output,brief_pdf,version=None):
             export_tree(runtime,root/'results')
             shutil.copy2(brief_pdf,root/'PROJECT_BRIEF.pdf')
             shutil.copy2(repo/'docs/project-brief.html',root/'PROJECT_BRIEF.html')
-            shutil.copy2(repo/'docs/project-brief.md',root/'PROJECT_BRIEF.md')
-            shutil.copy2(repo/'docs/interviewer-handoff.md',root/'GUIDE.md')
+            for document_source,document_target in [('docs/project-brief.md','PROJECT_BRIEF.md'),('docs/interviewer-handoff.md','GUIDE.md')]:
+                (root/document_target).write_text(bundle_markdown(repo,document_source,version,kind=='delivery'),encoding='utf-8')
             if kind=='delivery':
                 with zipfile.ZipFile(source) as archive:
                     for entry in archive.infolist():

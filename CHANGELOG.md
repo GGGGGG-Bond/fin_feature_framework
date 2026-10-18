@@ -1,5 +1,11 @@
 # 版本变更
 
+## 0.4.2（2026-10-18）
+
+- 原生Windows演示入口支持Python UTF-8运行；说明普通演示、WSL入口、符号链接测试权限和目录fsync的适用范围。
+- 完整包Markdown链接指向包内源码，纯结果包链接绑定固定公开标签；打包核验覆盖Markdown与HTML。
+- 项目说明采用最终成果表述，统一版本、运行说明和README文档索引。
+
 ## v0.4.1 · 联网测试补跑与 Windows 重算可移植性修复
 
 - 修复 `raw_store._fsync_dir` 在 Windows 上 `os.open` 目录抛 `PermissionError` 的问题：目录 fsync 仅 POSIX 支持，Windows 下跳过。

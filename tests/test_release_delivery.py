@@ -6,7 +6,7 @@ import zipfile
 
 import pytest
 from scripts.export_results import export_tree,check_links
-from scripts.package_release import manifest,zip_tree,start_page,finalize_bundle
+from scripts.package_release import manifest,zip_tree,start_page,finalize_bundle,bundle_markdown
 from scripts.verify_bundle import verify_bundle
 
 
@@ -85,3 +85,43 @@ def test_start_page_for_both_bundle_types(tmp_path):
         (root/'START_HERE.html').write_text(start_page('0.3.0','c'*40,with_code))
         result=finalize_bundle(root,'0.3.0','c'*40)
         assert result['verified_files']==len(files)+1
+
+
+@pytest.mark.parametrize('with_code',[True,False])
+def test_relocated_bundle_documents_resolve_to_code_or_fixed_tag(tmp_path,with_code):
+    from scripts.check_docs import check
+    repo=tmp_path/'repo';(repo/'docs').mkdir(parents=True)
+    (repo/'README.md').write_text('# 文档索引\n',encoding='utf-8')
+    (repo/'docs/acceptance.md').write_text('# 验收\n',encoding='utf-8')
+    (repo/'docs/submission-message.md').write_text('# 消息\n',encoding='utf-8')
+    (repo/'docs/guide.md').write_text(
+        '[索引](../README.md#文档索引) · [验收](acceptance.md) · [消息](submission-message.md)\n'
+        '[外部](https://example.org) · [本页](#指南)\n# 指南\n',encoding='utf-8')
+    root=tmp_path/'bundle';root.mkdir()
+    body=bundle_markdown(repo,'docs/guide.md','0.4.2',with_code)
+    (root/'GUIDE.md').write_text(body,encoding='utf-8')
+    if with_code:
+        import shutil
+        shutil.copytree(repo,root/'code')
+        assert '(code/README.md#文档索引)' in body
+        assert '(code/docs/acceptance.md)' in body
+        assert '(code/docs/submission-message.md)' in body
+    else:
+        prefix='https://github.com/GGGGGG-Bond/fin_feature_framework/blob/v0.4.2/'
+        assert '('+prefix+'README.md#文档索引)' in body
+        assert '('+prefix+'docs/acceptance.md)' in body
+    assert '[外部](https://example.org)' in body and '[本页](#指南)' in body
+    assert check(root)['errors']==[]
+
+
+def test_bundle_finalization_rejects_relocated_markdown_broken_link(tmp_path):
+    (tmp_path/'GUIDE.md').write_text('[验收](acceptance.md)\n',encoding='utf-8')
+    with pytest.raises(ValueError,match='Markdown'):
+        finalize_bundle(tmp_path,'0.4.2','c'*40)
+
+
+def test_bundle_document_relocation_rejects_escaping_source_link(tmp_path):
+    (tmp_path/'docs').mkdir()
+    (tmp_path/'docs/guide.md').write_text('[外部文件](../../private.md)\n',encoding='utf-8')
+    with pytest.raises(ValueError,match='invalid source document link'):
+        bundle_markdown(tmp_path,'docs/guide.md','0.4.2',True)

@@ -3,7 +3,7 @@ setlocal
 chcp 65001 >nul
 where wsl.exe >nul 2>nul
 if errorlevel 1 (
-  echo WSL is required for recomputing. Open the Release results ZIP for a no-install preview.
+  echo This shortcut uses WSL. For native Python commands see README.md, or open the Release results ZIP.
   if not "%FIN_DEMO_NO_OPEN%"=="1" pause
   exit /b 2
 )
