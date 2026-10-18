@@ -22,7 +22,7 @@ bash scripts/setup_demo.sh
 使用干净Git checkout、Linux/WSL的已安装运行环境；先逐页检查一页PDF，再执行：
 
 ```bash
-.venv/bin/python scripts/package_release.py --brief-pdf /path/project-brief-v0.4.0.pdf --output-dir dist/new-v0.4.0
+.venv/bin/python scripts/package_release.py --brief-pdf /path/project-brief-v0.4.1.pdf --output-dir dist/new-v0.4.1
 ```
 
 输出源码ZIP、免安装结果ZIP、完整交付ZIP、PDF、release-manifest.json及SHA256SUMS.txt。脚本不会创建标签、推送或发布Release；这些步骤需由发布者核对仓库、身份和固定提交后执行。打包从Git提交读取源码，拒绝脏工作树；运行数据仅在临时目录生成，原体和DB不进入公开资产。下载后的完整包可用Python标准库的scripts/verify_bundle.py校验；发布前以--strict检查全部不可变文件，复算产生的新文件不在原清单中。

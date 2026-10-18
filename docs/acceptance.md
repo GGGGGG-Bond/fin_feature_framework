@@ -2,6 +2,14 @@
 
 [返回文档总索引](../README.md#文档索引)
 
+## v0.4.1联网补跑与Windows可移植性修复（2026-10-18）
+
+11项联网端到端测试（`tests/test_e2e.py`）本机实际补跑通过（Windows CPython3.12.9，11.89秒），确认东方财富公开接口当前可用；离线856项保持，全量867项=856离线+11联网。修复`raw_store._fsync_dir`在Windows上`os.open`目录抛`PermissionError`的问题：目录fsync仅POSIX支持，Windows跳过，Linux行为不变。
+
+- 原生Windows全量861/867通过；设`PYTHONUTF8=1`后864/867，仅剩3项符号链接安全测试因Windows创建symlink需开发者模式/管理员权限未过（`WinError 1314`），Linux/WSL无此限制。
+- 默认离线验收仍为`-m 'not requires_network'`；联网11项单独执行，不并入CI离线矩阵。
+- 文档同步更新README/AGENTS/gaps的Windows重算与联网测试说明，CHANGELOG新增v0.4.1条目；`check_docs`与`check_release_refs`通过。
+
 ## v0.4.0覆盖与研究升级（2026-10-18）
 
 全新含空格Linux目录及全新CPython3.14.6虚拟环境：**856 passed, 11 deselected**，保留原832项，新增24项正式财报覆盖与滚动研究回归。默认一键启动37.64秒，完整verify_offline.py通过、88.42秒；仅关闭包源后的环境复用11.93秒。耗时来自有软件包缓存的本机，不代表其他机器保证。

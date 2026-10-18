@@ -4,19 +4,19 @@ Python / SQLite / CLI：公开财务采集 → 清洗 → 12项特征 → 双源
 
 [![Offline acceptance](https://github.com/GGGGGG-Bond/fin_feature_framework/actions/workflows/offline.yml/badge.svg)](https://github.com/GGGGGG-Bond/fin_feature_framework/actions/workflows/offline.yml)
 
-**本页是文档总入口。** 固定交付版本为[v0.4.0](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/tag/v0.4.0)；main中的文档持续维护，已发布标签和下载文件保持冻结。
+**本页是文档总入口。** 固定交付版本为[v0.4.1](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/tag/v0.4.1)；main中的文档持续维护，已发布标签和下载文件保持冻结。
 
 ## 快速入口
 
 | 你想做什么 | 从这里开始 |
 |---|---|
-| 不安装环境，先看完整结果 | [下载完整交付包](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.4.0/fin-feature-framework-v0.4.0-delivery.zip)，解压打开START_HERE.html |
+| 不安装环境，先看完整结果 | [下载完整交付包](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.4.1/fin-feature-framework-v0.4.1-delivery.zip)，解压打开START_HERE.html |
 | 只想快速在线阅读 | [八公司、双源及收益结果](showcase/expanded.md)、[三公司36项完整计算](docs/verified-coverage.md) |
-| 三分钟了解项目 | [一页说明](docs/project-brief.md)、[PDF下载](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.4.0/project-brief-v0.4.0.pdf) |
+| 三分钟了解项目 | [一页说明](docs/project-brief.md)、[PDF下载](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.4.1/project-brief-v0.4.1.pdf) |
 | 交给面试官 | [交付消息模板及链接](docs/submission-message.md)、[文件选择与复现说明](docs/interviewer-handoff.md) |
 | 核对是否完成、还有哪些缺口 | [当前进展](docs/progress.md)、[验收证据](docs/acceptance.md)、[缺口与升级优先级](docs/gaps-and-weaknesses.md) |
 
-完整包已含源码、HTML、CSV/JSON、PDF与校验清单，不必重复下载三种ZIP。只读查看可选[结果包](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.4.0/fin-feature-framework-v0.4.0-results.zip)；需要完整Git历史时克隆仓库。
+完整包已含源码、HTML、CSV/JSON、PDF与校验清单，不必重复下载三种ZIP。只读查看可选[结果包](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.4.1/fin-feature-framework-v0.4.1-results.zip)；需要完整Git历史时克隆仓库。
 
 ## 一键运行
 
@@ -36,7 +36,7 @@ bash run.sh --only interview  # 只运行12项完整特征样例
 bash run.sh --only all        # 扩展展示及其他四组演示
 ```
 
-复现正式交付时，克隆命令增加`--branch v0.4.0`即可固定版本。运行失败、平台前提及下载校验见[交付指南](docs/interviewer-handoff.md)。
+复现正式交付时，克隆命令增加`--branch v0.4.1`即可固定版本。运行失败、平台前提及下载校验见[交付指南](docs/interviewer-handoff.md)。
 
 ## 文档索引
 
@@ -55,7 +55,7 @@ bash run.sh --only all        # 扩展展示及其他四组演示
 | 截至日与修订 | [历史查询与刷新](docs/stage-4.md) | 系统观察/公开时间、修订失效、保存历史的边界 |
 | 文档维护与历史 | [维护规则](docs/documentation.md)、[参考目录](docs/README.md)、[历史说明](HISTORY.md) | 文档职责、更新检查、历史计划/快照的位置 |
 
-## v0.4.0结果与边界
+## v0.4.1结果与边界
 
 - 八家公司、2023Q1—2024Q4、三类报表：192版本，768条特征，232条有值，768/768冻结输入重放一致。
 - 新增独立正式财报视图：贵州茅台、美的集团、宁德时代共78项事实，2024年末目标36/36有值；全144位置中57有值、144/144重放一致。供应商未知口径仍拒算，两种输入分别统计。

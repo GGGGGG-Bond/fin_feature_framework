@@ -1,6 +1,6 @@
 # 财务数据与特征工程框架 · 面试交付说明
 
-**版本 v0.4.0 · 项目负责人 gezhijie · Python / SQLite / CLI**
+**版本 v0.4.1 · 项目负责人 gezhijie · Python / SQLite / CLI**
 
 项目将公开财务数据整理为带来源、质量诊断和计算血缘的12项财务特征，覆盖盈利、成长、偿债。主来源东方财富，新浪作辅助核验；第二来源不拼接主数据。
 
@@ -22,4 +22,4 @@
 
 **范围与贡献说明**：项目需求、财务约束、版本演进和验收取舍是讲解重点；开发使用AI辅助编码与检查，结果属于项目本地自验证，不冒充独立第三方认证。固定字段来自真实采样，但离线API信封为重建；年报事实人工口径声明只绑定具体输入。八家手选公司不是全市场，收益只验证流程，未证明策略有效；未知历史修订、生产调度和云环境保留边界。
 
-[源码与迭代历史](https://github.com/GGGGGG-Bond/fin_feature_framework) · [固定版本与下载](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/tag/v0.4.0) · [验收详情](acceptance.md)
+[源码与迭代历史](https://github.com/GGGGGG-Bond/fin_feature_framework) · [固定版本与下载](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/tag/v0.4.1) · [验收详情](acceptance.md)
