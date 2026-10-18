@@ -15,6 +15,7 @@ import re
 import requests
 
 from fin_feature.addons.returns import run_return_backtest, export_return_backtest
+from fin_feature.addons.return_study import run_return_study, export_return_study
 from fin_feature.delivery import export_report
 from fin_feature.ingestion.http_evidence import EvidenceRequestExecutor
 from fin_feature.ingestion.service import FinancialIngestionCoordinator, FinancialUnitSpec
@@ -161,6 +162,15 @@ def run_showcase(output):
     primary = run_pipeline(financials['pages'], output / 'captured', recent_periods=8)
     comparison = dual_comparison(dual, reviews)
     write_json(output / 'dual-source.json', comparison)
+    sany_document = next(d for d in reviews['documents'] if d['id'] == 'sany')
+    write_json(output / 'disclosure-editions.json', dict(schema='disclosure-editions-v1', secucode='600031.SH',
+        report_date='2024-12-31', first_public_at=None, exact_revision_public_at=None,
+        editions=[dict(kind='original_2024_annual_edition', document=sany_document, available_by=sany_document['available_by'],
+                       values={f['field']: f['value'] for f in reviews['facts'] if f['document_id'] == 'sany' and f['report_date'] == '2024-12-31'}),
+                  dict(kind='later_2025_report_comparative', document=reviews['later_comparative'], available_by='2026-03-31',
+                       availability_basis='Conservative next-day bound after official HKEX 2026-03-30 document path; not exact first/revision time.',
+                       values={f['field']: f['value'] for f in reviews['later_comparative']['comparative_facts']})],
+        rule='Select only editions with declared available_by at or before the formation date; unknown first/revision instants remain unknown. Do not replace original report facts with later comparatives.'))
     write_json(output / 'features.json', primary['features'])
     import csv
     fields = ['secucode', 'name', 'report_date', 'field', 'eastmoney', 'sina', 'numeric_delta', 'numeric_agreement', 'official_value', 'official_delta_eastmoney', 'official_status', 'original_semantics', 'upstream_independence_verified']
@@ -182,6 +192,9 @@ def run_showcase(output):
     write_json(output / 'signals.json', signals)
     backtest = run_return_backtest(signals, prices, formation_date='2025-05-05', end_date='2025-12-31')
     export_return_backtest(backtest, output / 'backtest')
+    plan = json.loads(Path(__file__).with_name('return-study-plan.json').read_bytes())
+    study = run_return_study(signals, prices, windows=plan['windows'], universes=plan['universes'], costs=plan['cost_grid_bps'])
+    export_return_study(study, output / 'return-study')
     current = {r['secucode']: r for r in primary['features'] if r['report_date'] == '2024-12-31' and r['feature_name'] == 'debt_asset_ratio'}
     naive = []
     for page in financials['pages']:
@@ -194,6 +207,15 @@ def run_showcase(output):
     write_json(output / 'lookahead-rejections.json', rejected)
     from examples.interview_flow import run_interview_demo
     complete = run_interview_demo(output / 'required-features')
+    from examples.verified_flow import run_verified
+    verified = run_verified(output / 'reviewed')
+    coverage = dict(schema='feature-coverage-v2', provider=dict(positions=len(primary['features']),
+        finite=sum(r['feature_value'] is not None for r in primary['features']),
+        null_reasons=dict(Counter(r['not_computable_reason'] for r in primary['features'] if r['feature_value'] is None))),
+        reviewed=dict(positions=verified['features'], finite=verified['non_null_features'],
+                      target_positions=verified['target_positions'], target_finite=verified['target_finite']),
+        note='Provider and reviewed issuer input universes remain separate; do not merge denominators or transfer comparability declarations.')
+    write_json(output / 'coverage.json', coverage)
     summary = dict(schema='showcase-v1', companies=financials['companies'], periods=8, statement_versions=192,
         captured_at=financials['captured_at'], captured_primary_requests=24, captured_dual_requests=32, captured_price_requests=9,
         network_requests=0, reconstructed_api_envelopes=True, original_responses_in_repository=False,
@@ -203,17 +225,22 @@ def run_showcase(output):
         dual_statuses=dict(Counter(r['official_status'] for r in comparison)), dual_numeric_agreements=sum(r['numeric_agreement'] for r in comparison),
         backtest_status=backtest['status'], backtest_members=len(backtest['members']), backtest_groups=len(backtest['groups']),
         historical_current_provider_rejected=len(rejected['excluded_signals']), required_features_demonstrated=complete['demonstrated_features'],
+        reviewed_companies=3, reviewed_facts=verified['reviewed_facts'], reviewed_target_positions=verified['target_positions'],
+        reviewed_target_finite=verified['target_finite'], reviewed_features=verified['features'],
+        reviewed_non_null_features=verified['non_null_features'], reviewed_replay_count=verified['replay_count'],
+        reviewed_replay_matches=verified['replay_matches'], return_study_scenarios=len(study['scenarios']),
+        return_study_status=study['status'],
         limitations=['Eight fixed companies, eight quarters; neither full-market coverage nor an unbiased investment universe.',
                      'Captured field extracts are real, offline HTTP envelopes are reconstructed; parent bodies are outside Git.',
                      'Two websites do not prove independent upstreams or identical revision semantics.',
-                     'Unknown cross-period basis stays NULL; 12/12 complete features are separately demonstrated with reviewed issuer facts.',
+                     'Unknown provider cross-period basis stays NULL; three companies separately demonstrate 36/36 target results with reviewed issuer facts.',
                      'Backtest uses dated 2024 issuer-report inputs and conservative availability declarations, not archived historical HTTP bytes.'])
-    if backtest['exit_code'] or len(rejected['excluded_signals']) != 8:
+    if backtest['exit_code'] or study['exit_code'] or verified['target_finite'] != 36 or len(rejected['excluded_signals']) != 8:
         raise RuntimeError('backtest or availability guard failed')
     write_json(output / 'summary.json', summary)
     write_json(output / 'fixture-provenance.json', dict(manifest=IDENTITIES, financial_capture={k:v for k,v in financials.items() if k!='pages'}, official_reviews=reviews))
     from fin_feature.showcase_report import write_showcase
-    write_showcase(output, summary, primary['features'], comparison, backtest, complete)
+    write_showcase(output, summary, primary['features'], comparison, backtest, complete, verified=verified, study=study)
     return summary
 
 

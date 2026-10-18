@@ -67,7 +67,8 @@ def start_page(version,commit,with_code):
 <p class="muted">FINANCIAL FEATURE FRAMEWORK / '''+escape(version)+'''</p><h1>先看结果，再按需复现</h1>
 <div class="card"><h2><a href="results/index.html">打开八公司、双源核验与收益结果 →</a></h2><p>解压后直接用现代浏览器打开，无需Python、Git、WSL或金融网络。包含公司/期间筛选、具体数值、净值图及CSV/JSON。</p></div>
 <ol><li><a href="PROJECT_BRIEF.pdf">一页项目说明 PDF</a> · <a href="PROJECT_BRIEF.html">HTML版本</a></li><li><a href="GUIDE.md">交付与复现指南</a></li>'''+code+'''</ol>
-<p>8公司×8季度，192报表版本，768特征 / 232有值；其余保留拒算原因。96双源位置：81匹配2024年报、3对应后续调整值、12缺值/定义不齐。另有12/12完整特征样例。</p>
+<p>供应商视图：8公司×8季度，192报表版本，768特征 / 232有值。正式财报视图：茅台、美的、宁德时代共78项事实，目标期36/36特征有值，144/144冻结输入重放一致。两类分母分别统计。</p>
+<p>96双源位置：81匹配2024年报、3对应后续调整值、12缺值/定义不齐；另含三个滚动区间、三个成本假设、三种显式样本子集的9个研究场景。</p>
 <p>固定字段来自真实采样；离线HTTP信封重建，母原体、数据库及环境不随包分发。回测为手选小样本流程验证，不证明策略有效。两网站一致不证明独立上游或相同修订口径。</p>
 <p>固定源码提交：<code>'''+escape(commit)+'''</code>。<a href="MANIFEST.json">逐文件校验清单</a>；复算生成的新输出不在此清单中。</p>
 <p><a href="https://github.com/GGGGGG-Bond/fin_feature_framework/releases/tag/v'''+escape(version)+'''">固定版本下载</a> · <a href="https://github.com/GGGGGG-Bond/fin_feature_framework">Git历史与源码</a></p></html>'''
@@ -91,7 +92,9 @@ def build_release(repo,output,brief_pdf,version=None):
         subprocess.run([sys.executable,'-m','examples.showcase_flow','--output-dir',str(runtime)],cwd=repo,
                        env={**__import__('os').environ,'PYTHONDONTWRITEBYTECODE':'1'},check=True)
         summary=json.loads((runtime/'summary.json').read_bytes())
-        if summary['features']!=768 or summary['replay_matches']!=768 or not summary['evidence_audit_clean'] or summary['backtest_status']!='success':
+        if (summary['features']!=768 or summary['replay_matches']!=768 or not summary['evidence_audit_clean'] or summary['backtest_status']!='success'
+                or summary['reviewed_target_finite'] != 36 or summary['reviewed_replay_matches'] != 144
+                or summary['return_study_status'] != 'success' or summary['return_study_scenarios'] != 9):
             raise ValueError('release showcase acceptance mismatch')
         source=output/(prefix+'-source.zip')
         subprocess.run(['git','archive','--format=zip','--prefix='+prefix+'-source/','-o',str(source),commit],cwd=repo,check=True)

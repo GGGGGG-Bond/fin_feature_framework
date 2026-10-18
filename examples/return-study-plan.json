@@ -1,0 +1,16 @@
+{
+  "schema": "return-study-plan-v1",
+  "benchmark": "510300.SH",
+  "cost_grid_bps": [0, 10, 30],
+  "windows": [
+    {"formation_date": "2025-05-05", "end_date": "2025-06-30"},
+    {"formation_date": "2025-06-30", "end_date": "2025-09-30"},
+    {"formation_date": "2025-09-30", "end_date": "2025-12-31"}
+  ],
+  "universes": [
+    {"name": "全部8家", "companies": ["600519.SH", "000333.SZ", "300750.SZ", "600031.SH", "000002.SZ", "600036.SH", "601318.SH", "600030.SH"], "groups": 5},
+    {"name": "非金融5家", "companies": ["600519.SH", "000333.SZ", "300750.SZ", "600031.SH", "000002.SZ"], "groups": 2},
+    {"name": "制造示例3家", "companies": ["000333.SZ", "300750.SZ", "600031.SH"], "groups": 2}
+  ],
+  "selection_note": "Explicit broad demonstration subsets, not a standardized industry taxonomy or unbiased expanded market universe. Fixed 2024 signals are reused at later formations."
+}

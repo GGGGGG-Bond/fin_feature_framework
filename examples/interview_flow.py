@@ -33,10 +33,10 @@ API_FIELDS = dict(total_operate_income='TOTAL_OPERATE_INCOME', parent_netprofit=
                   weightavg_roe='WEIGHTAVG_ROE', gross_margin='XSMLL')
 
 
-def load_facts(path=FIXTURE):
+def load_facts(path=FIXTURE, expected_hash=FIXTURE_HASH):
     fixture = json.loads(Path(path).read_bytes())
     # Git normalizes text line endings; bind financial content, not CRLF bytes.
-    if hashlib.sha256(canonical_json(fixture).encode()).hexdigest() != FIXTURE_HASH:
+    if hashlib.sha256(canonical_json(fixture).encode()).hexdigest() != expected_hash:
         raise ValueError('reviewed interview fixture changed; review facts and update its identity')
     return fixture
 
@@ -89,7 +89,7 @@ class ReviewedFactSession:
         return response
 
 
-def reviewed_config(repo, fixture):
+def reviewed_config(repo, fixture, fixture_hash=FIXTURE_HASH):
     definitions = {name: name + '/reviewed-consolidated-report' for name in API_FIELDS}
     definitions.update(gross_margin='(operating_revenue-operating_cost)/operating_revenue',
                        current_ratio='current_assets/current_liabilities')
@@ -103,9 +103,9 @@ def reviewed_config(repo, fixture):
         reviews.append(dict(secucode=row['secucode'], report_date=row['report_date'], table_type=row['table_type'],
                             raw_digest=raw_digest(raw), metric_hash=row['metric_hash'],
                             semantic_hash=row['semantic_hash'],
-                            evidence_ref='examples/interview_financials.json#canonical-sha256=' + FIXTURE_HASH,
+                            evidence_ref=fixture.get('review_reference', 'examples/interview_financials.json') + '#canonical-sha256=' + fixture_hash,
                             currency=fixture['currency'], amount_unit=fixture['amount_unit'], scope=fixture['scope'],
-                            alignment='moutai-2024-pinned-reported-basis',
+                            alignment=fixture.get('alignment', 'moutai-2024-pinned-reported-basis'),
                             period_basis='stock_end' if row['table_type'] == 'balance_sheet' else 'flow_ytd',
                             fields=fields))
     return {'reviewed_inputs': reviews}
@@ -119,8 +119,8 @@ def boundary_cases():
             for name, result in [('missing_comparison', missing), ('negative_base', negative), ('unknown_unit', unknown)]]
 
 
-def run_interview_demo(output):
-    fixture = load_facts()
+def run_interview_demo(output, fixture_path=FIXTURE, expected_hash=FIXTURE_HASH):
+    fixture = load_facts(fixture_path, expected_hash)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
     db = Database(str(output / 'finance.db'))
@@ -134,7 +134,7 @@ def run_interview_demo(output):
             [FinancialUnitSpec(fixture['secucode'], report) for report in REPORT_TO_TABLE_TYPE])
         if run.exit_code:
             raise RuntimeError('reviewed fixture ingestion failed')
-        cleaning = reviewed_config(repo, fixture)
+        cleaning = reviewed_config(repo, fixture, expected_hash)
         config = {'database': {'path': str((output / 'finance.db').resolve())},
                   'raw_store': {'root': str((output / 'raw').resolve())}, 'cleaning': cleaning}
         (output / 'config.json').write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
@@ -157,7 +157,7 @@ def run_interview_demo(output):
         if report['exit_code'] or not all(r['match'] for r in replays):
             raise RuntimeError('interview evidence audit or replay failed')
         (output / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-        (output / 'fixture-provenance.json').write_bytes(FIXTURE.read_bytes())
+        (output / 'fixture-provenance.json').write_bytes(Path(fixture_path).read_bytes())
         (output / 'replay.json').write_text(json.dumps(replays, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         return summary
     finally:
