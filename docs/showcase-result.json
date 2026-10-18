@@ -1,0 +1,78 @@
+{
+  "schema": "showcase-v1",
+  "companies": [
+    {
+      "secucode": "600519.SH",
+      "name": "贵州茅台",
+      "group": "消费"
+    },
+    {
+      "secucode": "000333.SZ",
+      "name": "美的集团",
+      "group": "制造"
+    },
+    {
+      "secucode": "300750.SZ",
+      "name": "宁德时代",
+      "group": "新能源制造"
+    },
+    {
+      "secucode": "600031.SH",
+      "name": "三一重工",
+      "group": "装备制造"
+    },
+    {
+      "secucode": "000002.SZ",
+      "name": "万科A",
+      "group": "地产/亏损候选"
+    },
+    {
+      "secucode": "600036.SH",
+      "name": "招商银行",
+      "group": "银行"
+    },
+    {
+      "secucode": "601318.SH",
+      "name": "中国平安",
+      "group": "保险"
+    },
+    {
+      "secucode": "600030.SH",
+      "name": "中信证券",
+      "group": "证券"
+    }
+  ],
+  "periods": 8,
+  "statement_versions": 192,
+  "captured_at": "2026-10-18T04:59:55.649923+00:00",
+  "captured_primary_requests": 24,
+  "captured_dual_requests": 32,
+  "captured_price_requests": 9,
+  "network_requests": 0,
+  "reconstructed_api_envelopes": true,
+  "original_responses_in_repository": false,
+  "features": 768,
+  "non_null_features": 232,
+  "replay_count": 768,
+  "replay_matches": 768,
+  "evidence_audit_clean": true,
+  "dual_positions": 96,
+  "dual_statuses": {
+    "matches_report": 81,
+    "differs_from_report": 3,
+    "missing_or_definition": 12
+  },
+  "dual_numeric_agreements": 84,
+  "backtest_status": "success",
+  "backtest_members": 8,
+  "backtest_groups": 5,
+  "historical_current_provider_rejected": 8,
+  "required_features_demonstrated": 12,
+  "limitations": [
+    "Eight fixed companies, eight quarters; neither full-market coverage nor an unbiased investment universe.",
+    "Captured field extracts are real, offline HTTP envelopes are reconstructed; parent bodies are outside Git.",
+    "Two websites do not prove independent upstreams or identical revision semantics.",
+    "Unknown cross-period basis stays NULL; 12/12 complete features are separately demonstrated with reviewed issuer facts.",
+    "Backtest uses dated 2024 issuer-report inputs and conservative availability declarations, not archived historical HTTP bytes."
+  ]
+}
