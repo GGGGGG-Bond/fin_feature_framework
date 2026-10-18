@@ -1,52 +1,47 @@
 # 财务数据处理与特征工程框架
 
-Python / SQLite / CLI 项目，覆盖财务采集、原始证据、版本管理、清洗、12个特征、双源核验和离线重放。
+Python / SQLite / CLI：财务采集 → 清洗 → 12项特征 → 质量与来源核验。
 
-**只看结果，无需安装：**[演示结果](showcase/README.md) · [特征 CSV](showcase/features.csv) · [文档导航](docs/README.md)。
+**无需安装先看结果：**[12项完整样例](showcase/interview.md) · [三公司公开结果](showcase/README.md) · [当前完成度与边界](docs/progress.md)。
 
-## 运行离线演示
+## 克隆后运行
 
-支持 Linux，Windows 用户使用 WSL。推荐 Python 3.12。首次安装需要软件包网络；演示使用本仓库公开样例，不请求真实金融接口。
+需要 **Linux + Python 3.12或更新版本（含venv/pip）**；Windows在WSL中执行。首次安装需要软件包网络，演示本身不请求金融接口。
 
 ```bash
 git clone https://github.com/GGGGGG-Bond/fin_feature_framework.git
 cd fin_feature_framework
-bash scripts/setup_demo.sh
-.venv/bin/python scripts/demo.py
+bash run.sh
 ```
 
-生成三组结果：公开事实闭环、修订前后时点、人工主流程。输出位于 `data/demo/` 的新时间戳目录，包括数据库、证据、特征 CSV、报告和重放摘要。可加 `--only public`、`--only revision`、`--only artificial` 单独运行。
-
-## 在浏览器中运行
-
-提供 [Codespaces 配置](.devcontainer/devcontainer.json)。发布后可从仓库 Code → Codespaces 创建环境，准备完成后运行：
+一条命令完成环境准备、默认演示和HTML结果总览。终端会打印 `Overview: .../index.html`，用浏览器打开该文件即可；每次在 `data/demo/` 创建新目录，不覆盖前次结果。
 
 ```bash
-.venv/bin/python scripts/demo.py
+bash run.sh --open         # 请求本机浏览器打开结果；WSL/无桌面环境可手动打开
+bash run.sh --only all     # 完整样例、三公司公开事实、修订、人工流程四组演示
 ```
 
-Codespaces 需要登录 GitHub，受使用额度与计费规则约束。配置已提供，云端容器尚未实际创建验证；不是任何访客免登录的在线服务。见 [GitHub 说明](https://docs.github.com/en/codespaces/developing-in-a-codespace/creating-a-codespace-for-a-repository)。
+已安装多个Python时可用 `PYTHON=python3.12 bash run.sh` 指定。重复运行会复用依赖环境；测试环境另按[开发指南](docs/development.md)安装pytest。原生Windows暂不支持证据文件所需的目录fsync。
 
-## 能力与边界
+## 默认演示看什么
 
-- 东方财富主来源、新浪独立核验入口；第二来源不静默混算。
-- 原始响应、逐次观察、内容版本、清洗与特征输入可追溯；失败业务单元回滚。
-- 显式单位、累计转单季、负基数与不可比诊断；无法计算保留空值和原因。
-- 保存历史的 system/public 截至日查询、修订刷新、当前代码离线重放。
-- 真实样本96个位置：34已对正式财报核实一致、50有数值待人工核查、12来源字段/定义缺失。
-- 公开演示采用32项已核对财报事实重建接口信封，不冒充原始供应商响应。
-- 无法恢复未保存的历史版本或未知修订公开时间；现有盈利增长分组不是投资收益回测。
+- 茅台三份正式财报的27项固定事实，覆盖2023年末、2024半年、三季、年末。
+- **2024年末12/12特征有值**，包含ROE变化、营收/利润同比和单季环比、流动比率变化。
+- 走实际证据文件、SQLite版本、清洗、特征和重放路径；全范围48条结果中19条有值，其余期间保留空值原因。
+- HTML展示中文名称、百分比/百分点/倍数、拒算案例、CSV、质量报告和来源文件链接。
 
-## 测试与技术文档
+输入信封由正式财报事实重建，**不是供应商原始响应或本次真实采集**。流动比率由披露的流动资产/流动负债计算，毛利率由营业收入/营业成本计算；固定输入附有内容绑定的人工口径声明，默认真实采集的未知单位与可比性仍拒算。详情见[演示口径](docs/interview.md)。
 
-基础实现已在 Linux 验证770项离线测试通过，11项联网测试未执行。公开候选版的新验证另见[验收记录](docs/acceptance.md)。
+## 能力与限制
 
-```bash
-.venv/bin/python scripts/verify_offline.py --output-dir /tmp/new-fin-acceptance
-```
+采集限频与分页、失败单元回滚、原始证据、修订版本、清洗诊断、特征血缘、质量报告和离线重放均已实现。东方财富主来源，新浪独立核验，第二来源不静默拼接。
 
-完整测试需要 Git 工作目录；ZIP 下载可直接演示，完整验收建议使用 git clone。
+原双源样本96个位置：34已对正式财报核实一致、50有值待人工核查、12字段/定义缺失。新增面试样例不改变这组统计。未知修订公开时间、未保存历史与全市场覆盖仍有边界；**投资收益回测属于未完成附加项**，现有盈利增长分组不作为替代。
 
-阅读：[运行指南](docs/delivery.md) · [架构](docs/architecture.md) · [字段与特征定义](docs/stage-1/README.md) · [版本和血缘](docs/stage-2/README.md) · [来源核验](docs/stage-3/README.md) · [历史查询](docs/stage-4.md)。
+## 更多入口
 
-本仓库保留经脱敏的96个真实迭代提交和18个合并关系，提交时间与作者姓名保留，SHA因隐私清理而改变。见[历史说明](HISTORY.md)。不包含内部机器配置、私有运行数据库或凭据。尚未指定开源许可证。
+[文档导航](docs/README.md) · [安装与CLI](docs/delivery.md) · [测试与验收](docs/acceptance.md) · [财务定义](docs/stage-1/README.md)。阶段契约保留历史设计背景，当前状态以progress/acceptance为准。
+
+提供[Codespaces配置](.devcontainer/devcontainer.json)，但云端实例尚未实测。它需要GitHub登录及可用额度，不是免登录网页演示；见[GitHub说明](https://docs.github.com/en/codespaces/developing-in-a-codespace/creating-a-codespace-for-a-repository)。
+
+保留经脱敏的96个原始迭代提交和18个合并关系；后续公开改动继续正常提交。[历史说明](HISTORY.md)。尚未指定开源许可证。

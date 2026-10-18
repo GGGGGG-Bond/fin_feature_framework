@@ -65,10 +65,10 @@ features:
     - growth
     - solvency
 
-# 回测（分组分析）
+# 盈利增长分组分析（保留backtest配置名称）
 backtest:
   n_groups: 5
-  # 收益代理：next_profit_yoy = 下一报告期净利润同比增速
+  # 盈利增长代理：next_profit_yoy = 下一报告期净利润同比增速
   # 注意：这是盈利增长分析代理，非投资收益回测
   return_proxy: "next_profit_yoy"
 

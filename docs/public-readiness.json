@@ -57,5 +57,6 @@
     "business_tests_fixture_files_unchanged": 113,
     "commit_ids_rewritten_for_privacy": true,
     "original_history_modified_in_place": false
-  }
+  },
+  "superseded_for_current_status_by": "docs/interview-readiness.json"
 }
