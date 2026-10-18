@@ -7,6 +7,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 CURRENT_DOCS = ['README.md', 'docs/project-brief.md', 'docs/project-brief.html',
                 'docs/interviewer-handoff.md', 'docs/submission-message.md']
+STATUS_DOCS = ['docs/progress.md', 'docs/gaps-and-weaknesses.md', 'docs/verified-coverage.md']
 
 
 def check(root=ROOT):
@@ -22,7 +23,13 @@ def check(root=ROOT):
             references += 1
             if found != version:
                 errors.append(dict(file=filename, expected=version, found=found))
+    for filename in STATUS_DOCS:
+        body = (root / filename).read_text(encoding='utf-8')
+        found = re.search(r'当前版本[\s*：:]*v?(\d+\.\d+\.\d+)', body)
+        if found is None or found[1] != version:
+            errors.append(dict(file=filename, expected=version, found=found[1] if found else None))
     return dict(schema='release-reference-check-v1', version=version, files=len(CURRENT_DOCS), references=references,
+                status_files=len(STATUS_DOCS),
                 errors=errors, external_http_requests=0)
 
 

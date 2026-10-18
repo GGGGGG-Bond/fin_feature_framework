@@ -14,8 +14,8 @@ def main():
     parser.add_argument('--output-dir',type=Path)
     parser.add_argument('--open',action='store_true',help='Ask the local browser to open the HTML overview')
     args=parser.parse_args()
-    if not sys.platform.startswith('linux'):
-        parser.error('Linux required: use WSL or Codespaces; native Windows directory fsync is unsupported.')
+    if not (sys.platform.startswith('linux') or sys.platform == 'win32'):
+        parser.error('Use Linux, WSL, or Windows with Python 3.12+; this platform has not been verified.')
     root=Path(__file__).resolve().parents[1]
     stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid.uuid4().hex[:8]
     output=(args.output_dir or root/'data/demo'/stamp).expanduser().resolve()
@@ -28,13 +28,13 @@ def main():
             result=subprocess.run([sys.executable,'-m',module,'--output-dir',str(output/name)],cwd=root,env=env,stdout=log,stderr=subprocess.STDOUT)
         item=dict(name=name,exit_code=result.returncode)
         if (output/name/'summary.json').exists():
-            item['summary']=json.loads((output/name/'summary.json').read_text())
+            item['summary']=json.loads((output/name/'summary.json').read_text(encoding='utf-8'))
         steps.append(item)
         print(f'{name}: exit={result.returncode}; replay={item.get("summary",{}).get("replay_matches",0)}/'
               f'{item.get("summary",{}).get("replay_count",0)}',flush=True)
         if result.returncode:break
     status=dict(output_dir=str(output),financial_network_requests=0,success=bool(steps) and all(s['exit_code']==0 for s in steps),steps=steps)
-    (output/'demo.json').write_text(json.dumps(status,ensure_ascii=False,indent=2)+'\n')
+    (output/'demo.json').write_text(json.dumps(status,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     from fin_feature.demo_report import write_overview
     overview=write_overview(output,status)
     if args.only=='showcase' and status['success']:
