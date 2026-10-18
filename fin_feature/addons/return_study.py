@@ -12,6 +12,11 @@ from fin_feature.storage.hashing import canonical_json
 
 
 def select_public_signals(signals, formation_date, universe):
+    if (not isinstance(signals, dict) or signals.get('schema') != 'return-signals-v1'
+            or not isinstance(signals.get('records'), list)
+            or not all(isinstance(r, dict) for r in signals['records'])
+            or not isinstance(signals.get('feature_name'), str) or not signals['feature_name']):
+        raise ValueError('return-signals-v1 with feature_name and record objects required')
     formation = _date(formation_date)
     if len(universe) != len(set(universe)) or not universe:
         raise ValueError('nonempty unique study universe required')
@@ -60,7 +65,7 @@ def run_return_study(signals, prices, *, windows, universes, costs=(0, 10, 30), 
                 result['formation_missing_signals'] = excluded
                 # Keep the planned denominator even if enough remaining names
                 # could technically fill the requested number of groups.
-                if excluded:
+                if excluded or result['excluded_signals']:
                     result.update(status='incomplete_signals', exit_code=1)
                 complete = complete and result['exit_code'] == 0
                 runs.append(result)

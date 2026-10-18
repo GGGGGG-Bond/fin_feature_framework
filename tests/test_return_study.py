@@ -70,6 +70,31 @@ def test_missing_member_price_never_chains_partial_success(study_inputs):
     assert not result['scenarios'][0]['chained_metrics']
 
 
+@pytest.mark.parametrize('change', ['missing_value', 'nonfinite_value', 'missing_evidence'])
+def test_invalid_selected_signal_blocks_chaining_even_when_enough_other_names_remain(study_inputs, change):
+    row = study_inputs[0]['records'][0]
+    if change == 'missing_evidence':
+        row['evidence_ref'] = ''
+    else:
+        row['feature_value'] = None if change == 'missing_value' else float('nan')
+    if change == 'nonfinite_value':
+        with pytest.raises(ValueError):
+            run(study_inputs)  # Invalid JSON numbers must never enter exports.
+        return
+    result = run(study_inputs)
+    assert result['exit_code'] == 1
+    for scenario in result['scenarios']:
+        assert len(scenario['companies']) == 4 and not scenario['chained_nav']
+        assert scenario['windows'][0]['eligible_companies'] == 3
+        assert scenario['windows'][0]['excluded_signals']
+
+
+def test_incorrect_signal_schema_is_not_relabelled_as_valid(study_inputs):
+    study_inputs[0]['schema'] = 'unreviewed-other-format'
+    with pytest.raises(ValueError, match='return-signals-v1'):
+        run(study_inputs)
+
+
 @pytest.mark.parametrize('formation', ['2024-05-06', '2024-05-08'])
 def test_overlapping_or_gapped_boundaries_rejected(study_inputs, formation):
     study_inputs[2]['windows'][1]['formation_date'] = formation
