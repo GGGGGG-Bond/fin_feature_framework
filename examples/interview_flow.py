@@ -23,9 +23,10 @@ from fin_feature.replay import replay_result
 from fin_feature.storage.database import Database
 from fin_feature.storage.raw_store import RawStore
 from fin_feature.storage.repository import Repository
+from fin_feature.storage.hashing import canonical_json
 
 FIXTURE = Path(__file__).with_name('interview_financials.json')
-FIXTURE_HASH = 'a15328069dfb933b640a60412fcf56fc48ddeed900786d66a0c32c582ca22ba9'
+FIXTURE_HASH = '421f9ac3e12f749f3850d449b593884e085a82e88994ce51e123f835ebfc3c41'
 API_FIELDS = dict(total_operate_income='TOTAL_OPERATE_INCOME', parent_netprofit='PARENT_NETPROFIT',
                   total_assets='TOTAL_ASSETS', total_liabilities='TOTAL_LIABILITIES',
                   total_equity='TOTAL_EQUITY', current_ratio='CURRENT_RATIO',
@@ -33,10 +34,11 @@ API_FIELDS = dict(total_operate_income='TOTAL_OPERATE_INCOME', parent_netprofit=
 
 
 def load_facts(path=FIXTURE):
-    body = Path(path).read_bytes()
-    if hashlib.sha256(body).hexdigest() != FIXTURE_HASH:
+    fixture = json.loads(Path(path).read_bytes())
+    # Git normalizes text line endings; bind financial content, not CRLF bytes.
+    if hashlib.sha256(canonical_json(fixture).encode()).hexdigest() != FIXTURE_HASH:
         raise ValueError('reviewed interview fixture changed; review facts and update its identity')
-    return json.loads(body)
+    return fixture
 
 
 def fixture_rows(fixture):
@@ -101,7 +103,7 @@ def reviewed_config(repo, fixture):
         reviews.append(dict(secucode=row['secucode'], report_date=row['report_date'], table_type=row['table_type'],
                             raw_digest=raw_digest(raw), metric_hash=row['metric_hash'],
                             semantic_hash=row['semantic_hash'],
-                            evidence_ref='examples/interview_financials.json#sha256=' + FIXTURE_HASH,
+                            evidence_ref='examples/interview_financials.json#canonical-sha256=' + FIXTURE_HASH,
                             currency=fixture['currency'], amount_unit=fixture['amount_unit'], scope=fixture['scope'],
                             alignment='moutai-2024-pinned-reported-basis',
                             period_basis='stock_end' if row['table_type'] == 'balance_sheet' else 'flow_ytd',

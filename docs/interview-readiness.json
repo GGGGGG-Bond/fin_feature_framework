@@ -4,7 +4,7 @@
   "version": "0.2.1",
   "platform": "local Linux / CPython 3.14.6",
   "status": "passed",
-  "tests": "786 passed, 11 deselected",
+  "tests": "788 passed, 11 deselected",
   "steps": [
     {
       "name": "cold-start",
@@ -50,8 +50,15 @@
   "notes": [
     "Cold start used a fresh virtual environment and previously cached public packages; timing is not a universal promise.",
     "Warm startup used PIP_NO_INDEX=1.",
-    "Original 770 tests retained, 16 new regression cases added.",
+    "Original 770 tests retained, 18 new regression cases added.",
     "Static snapshots contain reconstructed reviewed inputs, not original vendor HTTP responses."
   ],
-  "reviewed_profile_cli_export_exit_code": 0
+  "reviewed_profile_cli_export_exit_code": 0,
+  "git_checkout_followup": {
+    "tests": "788 passed, 11 deselected in 53.46s",
+    "lf_crlf_regressions": 2,
+    "run_sh_exit_code": 0,
+    "replay_matches": 48,
+    "fixture_hash": "canonical-json-sha256"
+  }
 }

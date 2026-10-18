@@ -133,9 +133,20 @@ def test_config_rejects_missing_evidence_and_incompatible_units(interview):
 def test_fixture_changes_require_re_review(tmp_path):
     from examples.interview_flow import FIXTURE
     changed = tmp_path / 'changed.json'
-    changed.write_bytes(FIXTURE.read_bytes() + b' ')
+    fixture = json.loads(FIXTURE.read_bytes())
+    fixture['facts'][0]['value'] = '999999'
+    changed.write_text(json.dumps(fixture))
     with pytest.raises(ValueError, match='review facts'):
         load_facts(changed)
+
+
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+def test_reviewed_fixture_survives_git_line_endings_and_json_formatting(tmp_path, newline):
+    from examples.interview_flow import FIXTURE
+    fixture = json.loads(FIXTURE.read_bytes())
+    changed = tmp_path / 'checkout.json'
+    changed.write_bytes(json.dumps(fixture, ensure_ascii=False, indent=4, sort_keys=True).replace('\n', newline).encode())
+    assert load_facts(changed) == fixture
 
 
 def test_overview_contains_actual_results_and_no_remote_assets(interview, tmp_path):
