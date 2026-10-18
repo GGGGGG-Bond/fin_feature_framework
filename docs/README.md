@@ -4,7 +4,7 @@
 |---|---|
 | 安装和运行 | [运行指南](delivery.md)、[开发指南](development.md) |
 | 面试快速演示 | [一键启动与讲解](interview.md)、[12项结果](../showcase/interview.md) |
-| 看示例结果 | [公开结果](../showcase/README.md) |
+| 看示例结果 | [八公司/双源/收益](../showcase/expanded.md)、[扩展说明](showcase.md)、[旧公开样例](../showcase/README.md) |
 | 看验收与限制 | [验收记录](acceptance.md)、[当前进展](progress.md) |
 | 理解目标 | [功能范围](requirements.md)、[建设路线](implementation-plan.md) |
 | 理解架构 | [架构说明](architecture.md)、[主要决策](decisions.md) |

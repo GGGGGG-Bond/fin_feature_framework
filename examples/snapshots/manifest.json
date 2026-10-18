@@ -1,0 +1,10 @@
+{
+  "schema": "canonical-snapshot-manifest-v1",
+  "algorithm": "SHA-256 of UTF-8 JSON, ensure_ascii=False, sorted keys, separators comma/colon, allow_nan=False",
+  "files": {
+    "dual-source.json": "e98f37d814f36e58c7a461ea189e61e968af105e116c1d19eb87de5428a0cf9a",
+    "financials.json": "fb87782e458bcf4ec72275747b90767300500b520cfa38c7f7f90e2cc7d612eb",
+    "official-reviews.json": "56c113cfaadaaf334f5e0e56f08a4d0717e6627a2e2032f2e415b6c371ac5e87",
+    "prices.json": "21fcd7a3952245add6040b2cb6d61c9c846ebbad8614cbb2267e7eb2355e5d56"
+  }
+}

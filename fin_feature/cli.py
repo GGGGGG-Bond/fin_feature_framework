@@ -318,6 +318,17 @@ def main() -> None:
     bt.add_argument("--feature", required=True, help="用于分组的特征名")
     bt.add_argument("--date", required=True, help="分组日（报告期，如 2024-12-31）")
 
+    rbp = sub.add_parser('return-backtest', help='按真实复权行情计算五组价格收益、成本、基准与回撤')
+    rbp.add_argument('--signals', required=True, help='return-signals-v1，含特征值和明确可用日期')
+    rbp.add_argument('--prices', required=True, help='captured-adjusted-prices-v1，明确复权口径')
+    rbp.add_argument('--formation-date', required=True)
+    rbp.add_argument('--end-date', required=True)
+    rbp.add_argument('--groups', type=int, default=5)
+    rbp.add_argument('--cost-bps', type=float, default=10)
+    rbp.add_argument('--benchmark', default='510300.SH')
+    rbp.add_argument('--output-dir', required=True)
+    from fin_feature.addons.returns import cmd_return_backtest
+
     sb = sub.add_parser("sample-batch", help="固定最多八家公司双源采样与覆盖汇总")
     sb.add_argument("--plan", required=True, help="sample-batch-v1 JSON 计划")
     sb.add_argument("--output-dir", required=True, help="必须不存在的新输出目录")
@@ -378,6 +389,7 @@ def main() -> None:
     args = parser.parse_args()
 
     commands = {
+        'return-backtest': cmd_return_backtest,
         "delivery-report": cmd_delivery_report,
         "as-of": cmd_asof,
         "refresh": cmd_refresh,

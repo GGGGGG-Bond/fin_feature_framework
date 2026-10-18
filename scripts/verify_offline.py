@@ -20,6 +20,7 @@ def verify(output):
             raise RuntimeError(f'{name} exited {result.returncode}; see {output/(name+".log")}')
     run('tests',['-m','pytest','tests/','-q','-p','no:cacheprovider','-m','not requires_network'])
     run('cli',['-m','fin_feature','--help'])
+    run('showcase',['-m','examples.showcase_flow','--output-dir',str(output/'showcase')])
     run('interview',['-m','examples.interview_flow','--output-dir',str(output/'interview')])
     run('artificial',['-m','examples.offline_flow','--output-dir',str(output/'artificial')])
     run('revision',['-m','examples.revision_flow','--output-dir',str(output/'revision')])
@@ -39,7 +40,7 @@ def verify(output):
     when=datetime.now(timezone.utc).date().isoformat()
     run('system-asof',['-m','fin_feature','--config',str(config),'as-of','--as-of',when,'--features'])
     run('public-asof',['-m','fin_feature','--config',str(config),'as-of','--as-of',when,'--view','public'],expected=1)
-    summaries={kind:json.loads((output/kind/'summary.json').read_bytes()) for kind in ('interview','artificial','revision','public')}
+    summaries={kind:json.loads((output/kind/'summary.json').read_bytes()) for kind in ('showcase','interview','artificial','revision','public')}
     report=json.loads((output/'delivery/summary.json').read_bytes())
     summary=dict(schema='offline-acceptance-v1',network_requests=0,commands=commands,demos=summaries,
                  delivery=dict(expected_features=report['expected_features'],returned_features=report['returned_features'],
