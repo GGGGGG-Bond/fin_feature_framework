@@ -68,11 +68,21 @@
   "backtest_groups": 5,
   "historical_current_provider_rejected": 8,
   "required_features_demonstrated": 12,
+  "reviewed_companies": 3,
+  "reviewed_facts": 78,
+  "reviewed_target_positions": 36,
+  "reviewed_target_finite": 36,
+  "reviewed_features": 144,
+  "reviewed_non_null_features": 57,
+  "reviewed_replay_count": 144,
+  "reviewed_replay_matches": 144,
+  "return_study_scenarios": 9,
+  "return_study_status": "success",
   "limitations": [
     "Eight fixed companies, eight quarters; neither full-market coverage nor an unbiased investment universe.",
     "Captured field extracts are real, offline HTTP envelopes are reconstructed; parent bodies are outside Git.",
     "Two websites do not prove independent upstreams or identical revision semantics.",
-    "Unknown cross-period basis stays NULL; 12/12 complete features are separately demonstrated with reviewed issuer facts.",
+    "Unknown provider cross-period basis stays NULL; three companies separately demonstrate 36/36 target results with reviewed issuer facts.",
     "Backtest uses dated 2024 issuer-report inputs and conservative availability declarations, not archived historical HTTP bytes."
   ]
 }

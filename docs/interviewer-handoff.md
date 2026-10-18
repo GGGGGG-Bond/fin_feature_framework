@@ -2,7 +2,7 @@
 
 [返回文档总索引](../README.md#文档索引)
 
-建议发送[固定版本v0.3.1](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/tag/v0.3.1)。源码和真实迭代历史在仓库；Release资产绑定固定提交，后续main变化不影响本次交付。
+建议发送[固定版本v0.4.0](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/tag/v0.4.0)。源码和真实迭代历史在仓库；Release资产绑定固定提交，后续main变化不影响本次交付。
 
 | 下载物 | 面向用途 | 如何开始 |
 |---|---|---|
@@ -12,7 +12,7 @@
 | project-brief PDF | 快速理解项目及面试讲解 | 一页说明；实际测试及边界仍以完整文档为准 |
 | SHA256SUMS.txt / release-manifest.json | 下载校验与版本身份 | 比较SHA-256；完整包另附逐文件MANIFEST.json |
 
-文件名带fin-feature-framework-v0.3.1前缀；无需同时下载三个ZIP。仅Git克隆保留完整提交历史，源码ZIP是固定提交快照。
+文件名带fin-feature-framework-v0.4.0前缀；无需同时下载三个ZIP。仅Git克隆保留完整提交历史，源码ZIP是固定提交快照。
 
 ## 查看与复现
 
@@ -21,7 +21,7 @@
 Linux/WSL：Python≥3.12，含venv/pip，首次安装需包源网络。
 
 ```bash
-git clone --branch v0.3.1 https://github.com/GGGGGG-Bond/fin_feature_framework.git
+git clone --branch v0.4.0 https://github.com/GGGGGG-Bond/fin_feature_framework.git
 cd fin_feature_framework
 bash run.sh
 ```
@@ -37,10 +37,10 @@ macOS可直接查看结果包；本次不承诺macOS重算。Codespaces配置存
 .venv/bin/python scripts/verify_offline.py --output-dir /tmp/new-fin-acceptance
 ```
 
-所有输出目录须是新目录。默认运行8公司展示及独立12项完整样例，`--only all`另含旧公开事实、修订和人工流程。程序失败会非零退出，日志位于打印的输出目录；不要为了得到有限值关闭unknown门禁。
+所有输出目录须是新目录。默认运行8公司展示、三公司正式财报完整特征及滚动成本研究，`--only all`另含旧公开事实、修订和人工流程。程序失败会非零退出，日志位于打印的输出目录；不要为了得到有限值关闭unknown门禁。
 
 校验下载：Linux用`sha256sum -c SHA256SUMS.txt`；Windows可用`Get-FileHash 文件名 -Algorithm SHA256`对照。完整包可执行`python code/scripts/verify_bundle.py .`核对内部全部文件；它只用Python标准库，不访问网络。校验用于检测传输变化，不是第三方签名或独立认证。
 
-本次固定验收8公司、8季度，真实采样和正式财报事实重建分别标注。主要展示是768结果/232有值，空值带原因；96个双源位置的3处后续调整差异和12处缺口保留。回测是手选小样本、前复权价格收益，不构成策略有效性证据。完整范围见progress/acceptance/showcase文档。
+本次固定验收8公司、8季度，真实采样和正式财报事实重建分别标注。供应商视图768结果/232有值；正式财报三公司目标36/36有值，核验144/144重放一致，两个分母分别统计；96个双源位置的3处后续调整差异和12处缺口保留。回测是手选小样本、前复权价格收益，不构成策略有效性证据。完整范围见progress/acceptance/showcase文档。
 
-发送时可直接复制[邮件与即时消息模板](submission-message.md)。最新文档导航在[根README](../README.md#文档索引)，固定交付资产及包内文档仍对应v0.3.1发布提交，持续整理main不会覆盖已发文件。
+发送时可直接复制[邮件与即时消息模板](submission-message.md)。最新文档导航在[根README](../README.md#文档索引)，固定交付资产及包内文档仍对应v0.4.0发布提交，持续整理main不会覆盖已发文件。

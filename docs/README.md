@@ -17,11 +17,12 @@
 
 | 内容 | 文件与含义 |
 |---|---|
-| v0.3.0八公司结果 | [展示摘要](showcase-result.json)、[逐特征覆盖复核](feature-coverage-v0.3.0.json)；详细数值见[扩展结果](../showcase/expanded.md) |
+| 0.4.0核验与研究 | [三公司来源与规则](verified-coverage.md)、[78项固定事实](../examples/reviewed/README.md)、[滚动计划](../examples/return-study-plan.json) |
+| v0.3.0八公司基线 | [展示摘要](showcase-result.json)、[逐特征覆盖复核](feature-coverage-v0.3.0.json)；详细数值见[扩展结果](../showcase/expanded.md) |
 | 固定输入来源 | [快照清单](../examples/snapshots/manifest.json)、[84项财报事实](../examples/snapshots/official-reviews.json)、[输入说明](../examples/snapshots/README.md) |
-| 正式发布身份 | [v0.3.1资产清单](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.3.1/release-manifest.json)、[资产SHA-256](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.3.1/SHA256SUMS.txt) |
+| 正式发布身份 | [v0.4.0资产清单](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.4.0/release-manifest.json)、[资产SHA-256](https://github.com/GGGGGG-Bond/fin_feature_framework/releases/download/v0.4.0/SHA256SUMS.txt) |
 
-当前交付版本为v0.3.1，沿用v0.3.0固定财务输入，见[版本变更](../CHANGELOG.md)。
+当前交付版本为v0.4.0，供应商基线沿用v0.3.0，新增三公司正式财报核验与滚动成本研究，见[版本变更](../CHANGELOG.md)。
 
 ## 历史计划与验证快照
 
