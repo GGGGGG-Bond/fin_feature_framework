@@ -20,6 +20,8 @@ HTTP尝试/分页 → 不可变响应文件 → 采集单元事务
 | features | 注册式特征、期间依赖、可比性门禁、不可计算原因 |
 | source_sample、reconcile、reference_check | 第二来源采样、数值比较、官方参考核查 |
 | asof、refresh、replay、delivery | 保存历史选择、修订失效与重算、输入重放与报告 |
+| addons.returns、showcase_report | 独立价格收益计算与自包含结果页；不改变旧盈利增长代理 |
+| capture_showcase、examples.showcase_flow | 固定范围真实采样与离线字段重建，原体与演示证据身份分开 |
 
 SQLite与文件系统不具备共同事务：响应文件先不可变发布，数据库业务写入按单元原子提交，孤儿与未完成状态由只读对账报告。失败时不删除证据。
 
