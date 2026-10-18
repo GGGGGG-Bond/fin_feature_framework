@@ -9,6 +9,7 @@ from fin_feature.cleaning import rules
 from fin_feature.storage.hashing import canonical_json, compute_metric_hash, compute_semantic_hash
 from fin_feature.utils.date_utils import get_disclosure_status, get_report_type, normalize_date
 from fin_feature.storage.clean_model import CLEAN_RESULT_COLUMNS
+from fin_feature.features.reviewed import validate_reviews, review_for, comparison_bases
 
 TABLE_TYPES = ('financial_indicator', 'income_statement', 'balance_sheet')
 IDENTITY_FIELDS = {'secucode', 'security_code', 'security_name', 'report_date', 'notice_date',
@@ -45,6 +46,8 @@ def effective_rules(config=None):
             result['default_missing_strategy'] = strategy
         else:
             result['missing_strategy'][key] = strategy
+    if 'reviewed_inputs' in config:
+        result['reviewed_inputs'] = validate_reviews(config['reviewed_inputs'])
     # Canonical JSON also removes tuple/list differences between defaults and YAML.
     return json.loads(canonical_json(result))
 
@@ -93,6 +96,15 @@ def _prepare(version, config):
     compatibility.update(secucode=version['secucode'], report_date=version['report_date'],
                          notice_date=version['notice_date'])
     diagnostics = json.loads(version.get('normalization_diagnostics') or '[]')
+    review = review_for(version, config)
+    if review and 'current_ratio' in review['fields'] and 'current_ratio' in values:
+        from fin_feature.features.standardize import standardize
+        values['current_ratio'], reason = standardize('current_ratio', raw.get('current_ratio'),
+                                                      unit_map={'current_ratio': 'times'})
+        diagnostics = [d for d in diagnostics if not (d.get('field') == 'current_ratio'
+                       and d.get('reason_code') == 'unknown_unit')]
+        if reason:
+            diagnostics.append({'field': 'current_ratio', 'reason_code': reason})
     blocked = {d.get('field') for d in diagnostics if d.get('reason_code') in ('unknown_unit', 'invalid_value')}
     from fin_feature.features.standardize import FIELD_UNITS
     for name in values:
@@ -210,6 +222,7 @@ class VersionedCleanRepository:
                 record = {**compat, **vals, 'record_ref': version['version_id'], 'clean_ref': clean['clean_id'],
                           'industry_type': version['industry_type'], '__standardized__': True,
                           '__diagnostics__': diagnostics}
+                record['__comparison_bases__'] = comparison_bases(version, self.config)
                 self.records[key] = record
         if set(selections) != set(self.results):
             raise ValueError('stale_clean: selection groups differ from current statements')

@@ -1,0 +1,111 @@
+{
+  "schema": "interview-demo-v1",
+  "public_facts": true,
+  "reconstructed_api_envelopes": true,
+  "original_vendor_responses": false,
+  "network_requests": 0,
+  "reviewed_public_facts": 27,
+  "target_company": "600519.SH",
+  "target_period": "2024-12-31",
+  "target_features": [
+    {
+      "feature_name": "current_ratio_change",
+      "feature_value": -1.7028329847873493,
+      "not_computable_reason": null
+    },
+    {
+      "feature_name": "debt_asset_ratio",
+      "feature_value": 0.19044755657916054,
+      "not_computable_reason": null
+    },
+    {
+      "feature_name": "debt_asset_ratio_change",
+      "feature_value": 5.41625191233453,
+      "not_computable_reason": null
+    },
+    {
+      "feature_name": "equity_ratio",
+      "feature_value": 0.8095524434208394,
+      "not_computable_reason": null
+    },
+    {
+      "feature_name": "gross_margin_feat",
+      "feature_value": 0.9193121663606457,
+      "not_computable_reason": null
+    },
+    {
+      "feature_name": "net_profit_margin",
+      "feature_value": 0.49515407812791257,
+      "not_computable_reason": null
+    },
+    {
+      "feature_name": "profit_qoq",
+      "feature_value": 0.327653797578137,
+      "not_computable_reason": null
+    },
+    {
+      "feature_name": "profit_yoy",
+      "feature_value": 0.1537996610162563,
+      "not_computable_reason": null
+    },
+    {
+      "feature_name": "revenue_qoq",
+      "feature_value": 0.28610423766754667,
+      "not_computable_reason": null
+    },
+    {
+      "feature_name": "revenue_yoy",
+      "feature_value": 0.1566397974302482,
+      "not_computable_reason": null
+    },
+    {
+      "feature_name": "roe_change",
+      "feature_value": 1.8300000000000038,
+      "not_computable_reason": null
+    },
+    {
+      "feature_name": "roe_change_rate",
+      "feature_value": 0.053524422345715236,
+      "not_computable_reason": null
+    }
+  ],
+  "required_features": 12,
+  "demonstrated_features": 12,
+  "features": 48,
+  "non_null_features": 19,
+  "not_computable_reasons": {
+    "unknown_unit": 1,
+    "missing_comparison_period": 23,
+    "missing_input": 5
+  },
+  "replay_count": 48,
+  "replay_matches": 48,
+  "report_exit_code": 0,
+  "evidence_audit_clean": true,
+  "boundary_cases": [
+    {
+      "case": "missing_comparison",
+      "input_kind": "artificial rule example",
+      "value": null,
+      "reason": "missing_input"
+    },
+    {
+      "case": "negative_base",
+      "input_kind": "artificial rule example",
+      "value": null,
+      "reason": "non_positive_comparison_base"
+    },
+    {
+      "case": "unknown_unit",
+      "input_kind": "artificial rule example",
+      "value": null,
+      "reason": "unknown_unit"
+    }
+  ],
+  "limitations": [
+    "离线信封由正式披露事实重建，非供应商原始响应。",
+    "2023比较列不是2023首次披露快照；不用于历史可交易性声明。",
+    "公司含财务子公司，流动比率仅演示已披露合并流动分类，不作跨行业排名。",
+    "未重新核验其他公司的50项待查和12项缺失，不改变原96项核验结论。"
+  ]
+}

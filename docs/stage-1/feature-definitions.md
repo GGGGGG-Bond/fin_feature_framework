@@ -53,3 +53,7 @@
 ## 2026-10-17：2C 血缘补充
 
 12 个公式及 definition_version=stage1-v1 保持；标准输入改从版本清洗结果读取。字段来源 record_ref、current/previous/year_ago/差分所需 prev_prev 版本按特征依赖保存到不可变计算记录；None 有明确 not_computable_reason。未知可比性门禁不因文件或血缘存在而解除；显式可比的正向数值只在受控测试声明。as_of_date=NULL，尚非离线回放或历史时点能力。见 [2C 契约](../stage-2/2c-contract.md)。
+
+## 0.2.1 当前实现补充
+
+上述公式与stage1-v1不变。已实现保存历史的截至日查询和离线重放，旧2C补充中的“尚非”仅代表当时阶段。新增固定正式事实样例使用绑定输入内容及语义哈希的 `cleaning.reviewed_inputs`，在清洗与重放中传递字段口径；声明缺失或不一致仍拒算。毛利率输入可由已核对正式报表的营业收入/营业成本按明确公式重建，不将其冒充供应商XSMLL。详见[面试演示口径](../interview.md)。

@@ -137,6 +137,10 @@ def _check_period_comparability(
             continue
 
         # 受控 fixture 显式声明可比 → 放行
+        cur_basis = getattr(cur_src, 'comparison_basis', None)
+        cmp_basis = getattr(cmp_src, 'comparison_basis', None)
+        if cur_basis and cur_basis == cmp_basis and cur_src.table_suffix == cmp_src.table_suffix:
+            continue
         if getattr(cur_src, "comparable", False) and getattr(cmp_src, "comparable", False):
             continue
 

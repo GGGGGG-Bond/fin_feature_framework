@@ -1,4 +1,4 @@
-"""CLI 入口：爬取/清洗/特征/质量/增量/回测 及原始证据对账、离线重放八个子命令。
+"""CLI 入口：采集、清洗、特征、核验及盈利增长分组分析等子命令。
 
 用法：
     python -m fin_feature.cli crawl
@@ -241,7 +241,7 @@ def cmd_audit_raw(args) -> int:
 
 
 def cmd_backtest(args) -> None:
-    """特征回测。"""
+    """盈利增长分组分析（保留backtest命令兼容名称）。"""
     config = load_config(args.config)
     logger = setup_logger(level=config.logging.get("level", "INFO"),
                           log_file=config.logging.get("file"))
@@ -262,7 +262,7 @@ def cmd_backtest(args) -> None:
     report_path = Path("reports") / f"backtest_{args.feature}_{args.date}.txt"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report_text, encoding="utf-8")
-    logger.info("回测报告已保存至 %s", report_path)
+    logger.info("盈利增长分组报告已保存至 %s", report_path)
     db.close()
 
 
@@ -314,7 +314,7 @@ def main() -> None:
     sub.add_parser("quality", help="生成数据质量报告")
     sub.add_parser("incremental", help="对本地股票列表按报告期回扫并留证采集",
                    description="使用全部本地 stock_list；recent_periods 限制报告期，水位不作请求过滤。0 成功，1 失败，2 非法配置。")
-    bt = sub.add_parser("backtest", help="特征回测（分组分析）")
+    bt = sub.add_parser("backtest", help="盈利增长分组分析（非投资收益回测）")
     bt.add_argument("--feature", required=True, help="用于分组的特征名")
     bt.add_argument("--date", required=True, help="分组日（报告期，如 2024-12-31）")
 

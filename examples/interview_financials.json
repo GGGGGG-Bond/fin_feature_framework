@@ -1,0 +1,313 @@
+{
+  "schema": "interview-facts-v1",
+  "secucode": "600519.SH",
+  "target_period": "2024-12-31",
+  "provider_payload": false,
+  "currency": "CNY",
+  "amount_unit": "yuan",
+  "scope": "consolidated",
+  "reviewed_at": "2026-10-18",
+  "documents": [
+    {
+      "id": "annual",
+      "title": "贵州茅台2024年年度报告",
+      "url": "https://www.moutai.com.cn/mtgf/articleFileDir/2025-04/08/8055b7bed7db41bdbc617f4c9b9ec591.pdf",
+      "sha256": "5299f4940e2ce4e91084b73dc457d558b9d335fa76fbfee6227e4254eb7f4a30"
+    },
+    {
+      "id": "q3",
+      "title": "贵州茅台2024年第三季度报告",
+      "url": "https://www.moutai.com.cn/mtgf/attachDir/2024/10/2024102616181086826.pdf",
+      "sha256": "ebeccbbe12b5b1a9dfa5ada16c956cba6fa30a6fb917f95856da16c1a719ce98"
+    },
+    {
+      "id": "h1",
+      "title": "贵州茅台2024年半年度报告",
+      "url": "https://www.moutai.com.cn/mtgf/attachDir/2024/08/2024080910020059419.pdf",
+      "sha256": "898b37d6529d0042aa66461bae11b84a47f9337c2ff1d572155bfa71fca77c58"
+    }
+  ],
+  "facts": [
+    {
+      "report_date": "2024-12-31",
+      "field": "total_assets",
+      "value": "298944579918.70",
+      "page": 59,
+      "row_label": "资产总计",
+      "column_label": "2024年12月31日",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2023-12-31",
+      "field": "total_assets",
+      "value": "272699660092.25",
+      "page": 59,
+      "row_label": "资产总计",
+      "column_label": "2023年12月31日",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-12-31",
+      "field": "total_liabilities",
+      "value": "56933264798.10",
+      "page": 60,
+      "row_label": "负债合计",
+      "column_label": "2024年12月31日",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2023-12-31",
+      "field": "total_liabilities",
+      "value": "49043190797.43",
+      "page": 60,
+      "row_label": "负债合计",
+      "column_label": "2023年12月31日",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-12-31",
+      "field": "total_equity",
+      "value": "242011315120.60",
+      "page": 61,
+      "row_label": "所有者权益（或股东权益）合计",
+      "column_label": "2024年12月31日",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2023-12-31",
+      "field": "total_equity",
+      "value": "223656469294.82",
+      "page": 61,
+      "row_label": "所有者权益（或股东权益）合计",
+      "column_label": "2023年12月31日",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-12-31",
+      "field": "total_operate_income",
+      "value": "174144069958.25",
+      "page": 63,
+      "row_label": "营业总收入",
+      "column_label": "2024年度",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2023-12-31",
+      "field": "total_operate_income",
+      "value": "150560330316.45",
+      "page": 63,
+      "row_label": "营业总收入",
+      "column_label": "2023年度",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-12-31",
+      "field": "operate_cost",
+      "value": "13789482367.98",
+      "page": 63,
+      "row_label": "营业成本",
+      "column_label": "2024年度",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2023-12-31",
+      "field": "operate_cost",
+      "value": "11867273851.78",
+      "page": 63,
+      "row_label": "营业成本",
+      "column_label": "2023年度",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-12-31",
+      "field": "parent_netprofit",
+      "value": "86228146421.62",
+      "page": 64,
+      "row_label": "归属于母公司股东的净利润",
+      "column_label": "2024年度",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2023-12-31",
+      "field": "parent_netprofit",
+      "value": "74734071550.75",
+      "page": 64,
+      "row_label": "归属于母公司股东的净利润",
+      "column_label": "2023年度",
+      "document": "annual",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-12-31",
+      "field": "weightavg_roe",
+      "value": "36.02",
+      "document": "annual",
+      "page": 5,
+      "row_label": "加权平均净资产收益率（%）",
+      "column_label": "2024-12-31",
+      "unit": "percent"
+    },
+    {
+      "report_date": "2023-12-31",
+      "field": "weightavg_roe",
+      "value": "34.19",
+      "document": "annual",
+      "page": 5,
+      "row_label": "加权平均净资产收益率（%）",
+      "column_label": "2023-12-31",
+      "unit": "percent"
+    },
+    {
+      "report_date": "2024-12-31",
+      "field": "operating_revenue",
+      "value": "170899152276.34",
+      "document": "annual",
+      "page": 63,
+      "row_label": "其中：营业收入",
+      "column_label": "2024-12-31",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-12-31",
+      "field": "operate_cost",
+      "value": "13789482367.98",
+      "document": "annual",
+      "page": 63,
+      "row_label": "其中：营业成本",
+      "column_label": "2024-12-31",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-12-31",
+      "field": "current_assets",
+      "value": "251726674636.66",
+      "document": "annual",
+      "page": 59,
+      "row_label": "流动资产合计",
+      "column_label": "2024-12-31",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-12-31",
+      "field": "current_liabilities",
+      "value": "56515990618.96",
+      "document": "annual",
+      "page": 60,
+      "row_label": "流动负债合计",
+      "column_label": "2024-12-31",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-09-30",
+      "field": "total_assets",
+      "value": "286770722957.69",
+      "document": "q3",
+      "page": 6,
+      "row_label": "资产总计",
+      "column_label": "2024-09-30",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-09-30",
+      "field": "total_liabilities",
+      "value": "39082558719.52",
+      "document": "q3",
+      "page": 7,
+      "row_label": "负债合计",
+      "column_label": "2024-09-30",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-09-30",
+      "field": "total_equity",
+      "value": "247688164238.17",
+      "document": "q3",
+      "page": 7,
+      "row_label": "所有者权益（或股东权益）合计",
+      "column_label": "2024-09-30",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-09-30",
+      "field": "current_assets",
+      "value": "238419577361.93",
+      "document": "q3",
+      "page": 5,
+      "row_label": "流动资产合计",
+      "column_label": "2024-09-30",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-09-30",
+      "field": "current_liabilities",
+      "value": "38723890549.12",
+      "document": "q3",
+      "page": 7,
+      "row_label": "流动负债合计",
+      "column_label": "2024-09-30",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-09-30",
+      "field": "total_operate_income",
+      "value": "123122542625.45",
+      "document": "q3",
+      "page": 8,
+      "row_label": "一、营业总收入",
+      "column_label": "2024-09-30",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-09-30",
+      "field": "parent_netprofit",
+      "value": "60827552118.51",
+      "document": "q3",
+      "page": 9,
+      "row_label": "归属于母公司股东的净利润",
+      "column_label": "2024-09-30",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-06-30",
+      "field": "total_operate_income",
+      "value": "83451164646.53",
+      "document": "h1",
+      "page": 30,
+      "row_label": "一、营业总收入",
+      "column_label": "2024-06-30",
+      "unit": "yuan"
+    },
+    {
+      "report_date": "2024-06-30",
+      "field": "parent_netprofit",
+      "value": "41695610983.37",
+      "document": "h1",
+      "page": 31,
+      "row_label": "归属于母公司股东的净利润",
+      "column_label": "2024-06-30",
+      "unit": "yuan"
+    }
+  ],
+  "review_note": "逐页核对人民币元、合并报表、累计流量/期末余额与字段定义。2023年度值采用2024年报比较列；2024年报第6页披露季度数据与已披露定期报告无差异。此处仅声明这些固定样本的报告口径可比，不证明全历史修订对齐或历史首次可得性。",
+  "derived_fields": {
+    "current_ratio": "合并资产负债表流动资产合计 / 流动负债合计，倍数；不是供应商 CURRENT_RATIO 单位推断。",
+    "gross_margin": "(合并利润表营业收入 - 营业成本) / 营业收入；不使用营业总收入、不使用主营酒类毛利率。"
+  },
+  "limitations": [
+    "离线信封由正式披露事实重建，非供应商原始响应。",
+    "2023比较列不是2023首次披露快照；不用于历史可交易性声明。",
+    "公司含财务子公司，流动比率仅演示已披露合并流动分类，不作跨行业排名。",
+    "未重新核验其他公司的50项待查和12项缺失，不改变原96项核验结论。"
+  ]
+}
